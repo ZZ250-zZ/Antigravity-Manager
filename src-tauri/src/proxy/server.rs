@@ -115,6 +115,7 @@ pub struct AppState {
     pub port: u16,                     // [NEW] 本地监听端口 (v4.0.8 修复)
     pub proxy_pool_state: Arc<tokio::sync::RwLock<crate::proxy::config::ProxyPoolConfig>>, // [FIX Web Mode]
     pub proxy_pool_manager: Arc<crate::proxy::proxy_pool::ProxyPoolManager>, // [FIX Web Mode]
+    pub qwen_signer: Arc<crate::proxy::providers::qwen::signer::Signer>, // [NEW] Qwen 签名管理器
 }
 
 // 为 AppState 实现 FromRef，以便中间件提取 security 状态
@@ -359,6 +360,7 @@ impl AxumServer {
             port,
             proxy_pool_state: proxy_pool_state.clone(),
             proxy_pool_manager: proxy_pool_manager.clone(),
+            qwen_signer: Arc::new(crate::proxy::providers::qwen::signer::Signer::new()),
         };
 
         // 构建路由 - 使用新架构的 handlers！
@@ -431,6 +433,13 @@ impl AxumServer {
                 post(handlers::common::handle_detect_model),
             )
             .route("/internal/warmup", post(handlers::warmup::handle_warmup)) // 内部预热端点
+            // Qwen Protocol
+            .route("/v1/qwen/models", get(handlers::qwen::handle_models))
+            .route(
+                "/v1/qwen/chat/completions",
+                post(handlers::qwen::handle_chat),
+            )
+            .route("/v1/qwen/health", get(handlers::qwen::handle_health))
             .route("/v1/api/event_logging/batch", post(silent_ok_handler))
             .route("/v1/api/event_logging", post(silent_ok_handler))
             // 应用 AI 服务特定的层
