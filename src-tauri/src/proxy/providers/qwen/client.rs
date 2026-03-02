@@ -141,6 +141,148 @@ impl QwenClient {
         Ok(response.status().is_success())
     }
 
+    /// 验证Cookie有效性 - 调用用户信息接口
+    /// 
+    /// 接口: https://api.qianwen.com/growth/user/benefit/user/member/info
+    /// 验证条件: 返回200 且 success=true
+    /// 
+    /// 使用 rquest 客户端以支持 TLS 指纹模拟（与 Chat 请求一致）
+    pub async fn check_user_info(&self, access_token: &str) -> Result<bool> {
+        use rquest::{Client, header};
+        
+        let start_time = std::time::Instant::now();
+        let cookies = parse_cookies_from_token(access_token)?;
+        
+        // 使用 rquest 客户端（支持 TLS 指纹模拟）
+        let client = Client::builder()
+            .emulation(rquest_util::Emulation::Chrome123)
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| anyhow!("Failed to build rquest client: {}", e))?;
+        
+        // 使用 api.qianwen.com 域名
+        // ut 参数是时间戳+随机UUID，用于防重放攻击
+        let ut = format!("{}-{}", chrono::Utc::now().timestamp(), uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or(""));
+        let url = format!(
+            "https://api.qianwen.com/growth/user/benefit/user/member/info?biz_id=ai_qwen&chat_client=h5&device=pc&fr=pc&pr=qwen&ut={}",
+            ut
+        );
+        
+        let cookie_header = cookies
+            .iter()
+            .map(|c| format!("{}={}", c.name, c.value))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            header::HeaderValue::from_str(&cookie_header)
+                .map_err(|e| anyhow!("Invalid cookie header: {}", e))?,
+        );
+        headers.insert(
+            header::USER_AGENT,
+            header::HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            ),
+        );
+        headers.insert(
+            "accept",
+            header::HeaderValue::from_static("application/json, text/plain, */*"),
+        );
+        headers.insert(
+            "accept-language",
+            header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"),
+        );
+        headers.insert(
+            "referer",
+            header::HeaderValue::from_static("https://www.qianwen.com/"),
+        );
+
+        // ========== DEBUG 日志开始 ==========
+        tracing::debug!("[check_user_info] ========== HTTP Request Details ==========");
+        tracing::debug!("[check_user_info] Method: POST");
+        tracing::debug!("[check_user_info] URL: {}", url);
+        tracing::debug!("[check_user_info] TLS Emulation: Chrome123 (rquest)");
+        
+        // 打印 Cookie 详情（只显示名称和域名，隐藏值）
+        tracing::debug!("[check_user_info] Parsed Cookies (count: {}):", cookies.len());
+        for cookie in &cookies {
+            tracing::debug!(
+                "[check_user_info]   - name: {}, domain: {}, path: {}, expires: {:?}",
+                cookie.name,
+                cookie.domain,
+                cookie.path,
+                cookie.expires
+            );
+        }
+        
+        // 打印完整的请求头
+        tracing::debug!("[check_user_info] Request Headers:");
+        for (name, value) in headers.iter() {
+            let val_str = value.to_str().unwrap_or("(binary)");
+            if name.as_str().to_lowercase() == "cookie" {
+                // Cookie 只打印名称列表，不打印值（保护隐私）
+                let cookie_names: Vec<&str> = val_str.split(';').map(|c| c.trim().split('=').next().unwrap_or("")).collect();
+                tracing::debug!("  {}: {:?}", name, cookie_names);
+            } else {
+                tracing::debug!("  {}: {}", name, val_str);
+            }
+        }
+        
+        // 浏览器指纹信息
+        tracing::debug!("[check_user_info] Browser Fingerprint:");
+        tracing::debug!("[check_user_info]   User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36");
+        tracing::debug!("[check_user_info]   Accept: application/json, text/plain, */*");
+        tracing::debug!("[check_user_info]   Accept-Language: zh-CN,zh;q=0.9,en;q=0.8");
+        tracing::debug!("[check_user_info]   Referer: https://www.qianwen.com/");
+        tracing::debug!("[check_user_info]   Origin: https://www.qianwen.com");
+        tracing::debug!("[check_user_info] Request Body: (empty)");
+        tracing::debug!("[check_user_info] ========== Sending Request ==========");
+        // ========== DEBUG 日志结束 ==========
+        
+        // 使用 POST 请求（405 错误表明 GET 不被允许）
+        let response = client.post(&url).headers(headers).body("").send().await
+            .map_err(|e| anyhow!("Request failed: {}", e))?;
+
+        let status = response.status();
+        let elapsed = start_time.elapsed();
+        
+        // ========== 响应 DEBUG 日志开始 ==========
+        tracing::debug!("[check_user_info] ========== HTTP Response Details ==========");
+        tracing::debug!("[check_user_info] Status: {}", status);
+        tracing::debug!("[check_user_info] Duration: {:?}", elapsed);
+        
+        // 打印响应头
+        tracing::debug!("[check_user_info] Response Headers:");
+        for (name, value) in response.headers().iter() {
+            let val_str = value.to_str().unwrap_or("(binary)");
+            tracing::debug!("  {}: {}", name, val_str);
+        }
+        // ========== 响应 DEBUG 日志结束 ==========
+
+        // 检查返回状态码
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            tracing::warn!("[check_user_info] Non-200 response: {} - {}", status, error_text);
+            tracing::debug!("[check_user_info] Cookie check result: false (HTTP error)");
+            return Ok(false);
+        }
+
+        // 解析 JSON 响应，检查 success 字段
+        let body: Value = response.json().await
+            .map_err(|e| anyhow!("Parse response failed: {}", e))?;
+        
+        tracing::debug!("[check_user_info] Response Body: {:?}", body);
+        
+        let success = body.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        
+        tracing::debug!("[check_user_info] Parsed 'success' field: {}", success);
+        tracing::debug!("[check_user_info] Cookie check result: {}", success);
+        tracing::debug!("[check_user_info] ========== End of Request ==========");
+        Ok(success)
+    }
+
     /// 构建请求头
     fn build_headers(
         &self,

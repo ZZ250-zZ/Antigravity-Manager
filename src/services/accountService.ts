@@ -28,6 +28,10 @@ export async function addAccount(email: string, refreshToken: string): Promise<A
     return await invoke('add_account', { email, refreshToken });
 }
 
+export async function addQwenAccount(email: string, cookieJson: string): Promise<Account> {
+    return await invoke('add_qwen_account', { email, cookieJson });
+}
+
 export async function deleteAccount(accountId: string): Promise<void> {
     return await invoke('delete_account', { accountId });
 }

@@ -461,6 +461,114 @@ impl UpstreamClient {
             .map_err(|e| format!("Parse json failed: {}", e))?;
         Ok(json)
     }
+
+    /// 调用 Qwen Chat API（支持流式响应）
+    /// 
+    /// 使用项目的 UpstreamClient（支持 TLS 伪装、代理池、连接复用）
+    /// 与 Gemini 的 call_v1_internal 保持一致的架构
+    pub async fn call_qwen_chat(
+        &self,
+        access_token: &str,
+        body: &Value,
+        signatures: &crate::proxy::providers::qwen::QwenSignatures,
+    ) -> Result<UpstreamCallResult, String> {
+        use crate::proxy::providers::qwen::signer::parse_cookies_from_token;
+
+        // 解析 Cookie
+        let cookies = parse_cookies_from_token(access_token)
+            .map_err(|e| format!("Failed to parse cookies: {}", e))?;
+
+        // 构建 Cookie header
+        let cookie_header = cookies
+            .iter()
+            .map(|c| format!("{}={}", c.name, c.value))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        // 构建请求头（模拟浏览器）
+        let mut headers = rquest::header::HeaderMap::new();
+        headers.insert(
+            rquest::header::COOKIE,
+            rquest::header::HeaderValue::from_str(&cookie_header)
+                .map_err(|e| format!("Invalid cookie header: {}", e))?,
+        );
+        headers.insert(
+            rquest::header::CONTENT_TYPE,
+            rquest::header::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            rquest::header::USER_AGENT,
+            rquest::header::HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            ),
+        );
+        headers.insert(
+            "x-xsrf-token",
+            rquest::header::HeaderValue::from_str(&signatures.csrf_token)
+                .map_err(|e| format!("Invalid XSRF token: {}", e))?,
+        );
+        headers.insert(
+            "x-platform",
+            rquest::header::HeaderValue::from_static("pc_tongyi"),
+        );
+        headers.insert(
+            "x-deviceid",
+            rquest::header::HeaderValue::from_static("web_device_id"),
+        );
+        headers.insert(
+            "x-chat-id",
+            rquest::header::HeaderValue::from_static("default"),
+        );
+        
+        // 安全签名（如果存在）
+        if !signatures.bx_et.is_empty() {
+            headers.insert(
+                "bx_et",
+                rquest::header::HeaderValue::from_str(&signatures.bx_et)
+                    .map_err(|e| format!("Invalid bx_et: {}", e))?,
+            );
+        }
+        if !signatures.bx_umidtoken.is_empty() {
+            headers.insert(
+                "bx-umidtoken",
+                rquest::header::HeaderValue::from_str(&signatures.bx_umidtoken)
+                    .map_err(|e| format!("Invalid bx_umidtoken: {}", e))?,
+            );
+        }
+
+        // 其他浏览器标准 headers
+        headers.insert(
+            "accept",
+            rquest::header::HeaderValue::from_static("application/json, text/event-stream, text/plain, */*"),
+        );
+        headers.insert(
+            "accept-language",
+            rquest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.8"),
+        );
+        headers.insert(
+            "origin",
+            rquest::header::HeaderValue::from_static("https://www.qianwen.com"),
+        );
+        headers.insert(
+            "referer",
+            rquest::header::HeaderValue::from_static("https://www.qianwen.com/"),
+        );
+
+        // 使用 default_client（支持 TLS 伪装、连接复用）
+        let url = "https://chat2.qianwen.com/api/v2/chat";
+        let response = self.default_client
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("Qwen API request failed: {}", e))?;
+
+        Ok(UpstreamCallResult {
+            response,
+            fallback_attempts: vec![],
+        })
+    }
 }
 
 #[cfg(test)]

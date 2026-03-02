@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Database, Globe, FileClock, Loader2, CheckCircle2, XCircle, Copy, Check, Info, Link2 } from 'lucide-react';
+import { Plus, Database, Globe, FileClock, Loader2, CheckCircle2, XCircle, Copy, Check, Info, Link2, Cloud } from 'lucide-react';
 import { useAccountStore } from '../../stores/useAccountStore';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
@@ -8,6 +8,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { request as invoke } from '../../utils/request';
 import { isTauri } from '../../utils/env';
 import { copyToClipboard } from '../../utils/clipboard';
+import { addQwenAccount } from '../../services/accountService';
 
 interface AddAccountDialogProps {
     onAdd: (email: string, refreshToken: string) => Promise<void>;
@@ -20,11 +21,13 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
     const { t } = useTranslation();
     const fetchAccounts = useAccountStore(state => state.fetchAccounts);
     const [isOpen, setIsOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<'oauth' | 'token' | 'import'>(isTauri() ? 'oauth' : 'token');
+    const [activeTab, setActiveTab] = useState<'oauth' | 'token' | 'qwen' | 'import'>(isTauri() ? 'oauth' : 'token');
     const [refreshToken, setRefreshToken] = useState('');
     const [oauthUrl, setOauthUrl] = useState('');
     const [oauthUrlCopied, setOauthUrlCopied] = useState(false);
     const [manualCode, setManualCode] = useState('');
+    const [qwenCookie, setQwenCookie] = useState('');
+    const [qwenEmail, setQwenEmail] = useState('');
 
     // UI State
     const [status, setStatus] = useState<Status>('idle');
@@ -148,6 +151,8 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
         setRefreshToken('');
         setOauthUrl('');
         setOauthUrlCopied(false);
+        setQwenCookie('');
+        setQwenEmail('');
     };
 
     const handleAction = async (
@@ -506,6 +511,15 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                                 {t('accounts.add.tabs.token')}
                             </button>
                             <button
+                                className={`py-2 px-3 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'qwen'
+                                    ? 'bg-white dark:bg-base-100 shadow-sm text-purple-600 dark:text-purple-400'
+                                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-base-300'
+                                    } `}
+                                onClick={() => setActiveTab('qwen')}
+                            >
+                                {t('accounts.add.tabs.qwen') || 'Qwen'}
+                            </button>
+                            <button
                                 className={`py-2 px-3 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'import'
                                     ? 'bg-white dark:bg-base-100 shadow-sm text-blue-600 dark:text-blue-400'
                                     : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-base-300'
@@ -637,6 +651,138 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                                 </div>
                             )}
 
+                            {/* Qwen Cookie 登录 */}
+                            {activeTab === 'qwen' && (
+                                <div className="space-y-4 py-2">
+                                    <div className="alert alert-info mb-4 text-xs py-2 flex items-center gap-2 bg-purple-50 dark:bg-purple-900/10 text-purple-600 dark:text-purple-400 border-purple-100 dark:border-purple-800">
+                                        <Info className="w-4 h-4" />
+                                        <span>{t('accounts.add.qwen.desc') || '1. 点击按钮打开Qwen登录页 2. 完成登录 3. 复制Cookie粘贴到下方'}</span>
+                                    </div>
+
+                                    {/* 打开浏览器按钮 */}
+                                    <button
+                                        className="w-full px-4 py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-medium rounded-xl shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        onClick={async () => {
+                                            if (isTauri()) {
+                                                try {
+                                                    await invoke('prepare_qwen_oauth');
+                                                    setMessage('浏览器已打开，请完成登录后复制 Cookie');
+                                                } catch (e) {
+                                                    setMessage(`打开浏览器失败: ${e}`);
+                                                }
+                                            } else {
+                                                window.open('https://www.qianwen.com/', '_blank');
+                                            }
+                                        }}
+                                    >
+                                        <Cloud className="w-4 h-4" />
+                                        {t('accounts.add.qwen.open_browser') || '打开 Qwen 登录页'}
+                                    </button>
+
+                                    {/* Cookie 复制脚本 */}
+                                    <div className="bg-gray-50 dark:bg-base-200 p-3 rounded-lg border border-gray-200 dark:border-base-300">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">快速获取Cookie脚本</span>
+                                            <button
+                                                className="text-xs text-purple-600 hover:text-purple-700"
+                                                onClick={() => {
+                                                    const script = `(() => { const cookies = document.cookie.split(';').map(c => { const [n, v] = c.trim().split('='); return { name: n, value: v, domain: '.qianwen.com', path: '/' }; }); const json = JSON.stringify(cookies); console.log(json); copy(json); return 'Cookie已输出到控制台并复制到剪贴板!'; })()`;
+                                                    navigator.clipboard.writeText(script);
+                                                    setMessage('脚本已复制到剪贴板，请在Qwen页面F12控制台粘贴执行');
+                                                }}
+                                            >
+                                                复制脚本
+                                            </button>
+                                        </div>
+                                        <code className="text-[10px] font-mono text-gray-600 dark:text-gray-400 break-all">
+                                            copy(JSON.stringify(document.cookie.split(';').map(c =&gt; {'{...}'})))
+                                        </code>
+                                    </div>
+
+                                    {/* Cookie 输入框 */}
+                                    <div className="bg-gray-50 dark:bg-base-200 p-4 rounded-lg border border-gray-200 dark:border-base-300">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-sm font-medium text-gray-500 dark:text-gray-400">Cookie JSON</span>
+                                        </div>
+                                        <textarea
+                                            className="textarea textarea-bordered w-full h-24 font-mono text-xs leading-relaxed focus:outline-none focus:border-purple-500 transition-colors bg-white dark:bg-base-100 text-gray-900 dark:text-base-content border-gray-300 dark:border-base-300 placeholder:text-gray-400"
+                                            placeholder='[{"name":"loginId","value":"xxx","domain":".qianwen.com"}]'
+                                            value={qwenCookie}
+                                            onChange={(e) => setQwenCookie(e.target.value)}
+                                            disabled={status === 'loading' || status === 'success'}
+                                        />
+                                        <p className="text-[10px] text-gray-400 mt-2">
+                                            F12开发者工具 → Console → 粘贴上方脚本执行 → Cookie自动复制
+                                        </p>
+                                    </div>
+
+                                    {/* 账号名称 */}
+                                    <div className="bg-gray-50 dark:bg-base-200 p-4 rounded-lg border border-gray-200 dark:border-base-300">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-sm font-medium text-gray-500 dark:text-gray-400">账号名称（可选）</span>
+                                        </div>
+                                        <input
+                                            type="text"
+                                            className="input input-bordered w-full text-sm focus:outline-none focus:border-purple-500 transition-colors bg-white dark:bg-base-100 text-gray-900 dark:text-base-content border-gray-300 dark:border-base-300"
+                                            placeholder='自定义账号名称，如：我的Qwen账号'
+                                            value={qwenEmail}
+                                            onChange={(e) => setQwenEmail(e.target.value)}
+                                            disabled={status === 'loading' || status === 'success'}
+                                        />
+                                    </div>
+
+                                    {/* 检查Cookie状态按钮 */}
+                                    <button
+                                        className="w-full px-4 py-2 bg-gray-100 dark:bg-base-300 hover:bg-gray-200 dark:hover:bg-base-200 text-gray-700 dark:text-gray-300 font-medium rounded-lg border border-gray-200 dark:border-base-300 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                                        onClick={async () => {
+                                            if (!qwenCookie) {
+                                                setMessage('请先输入Cookie');
+                                                return;
+                                            }
+                                            setStatus('loading');
+                                            setMessage('正在检查Cookie有效性...');
+                                            try {
+                                                const result = await invoke('check_qwen_cookie', { cookieJson: qwenCookie });
+                                                if (result) {
+                                                    setStatus('success');
+                                                    setMessage('Cookie有效！');
+                                                } else {
+                                                    setStatus('error');
+                                                    setMessage('Cookie无效或已过期，请重新登录');
+                                                }
+                                            } catch (e) {
+                                                setStatus('error');
+                                                setMessage(`检查失败: ${e}`);
+                                            }
+                                        }}
+                                        disabled={status === 'loading' || !qwenCookie}
+                                    >
+                                        {t('accounts.add.qwen.check_cookie') || '检查Cookie有效性'}
+                                    </button>
+
+                                    {/* 添加账号按钮 */}
+                                    <button
+                                        className="w-full px-4 py-3 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        onClick={() => handleAction(
+                                            'Qwen',
+                                            () => addQwenAccount(
+                                                qwenEmail || 'Qwen User',
+                                                qwenCookie
+                                            ),
+                                            { clearOauthUrl: false }
+                                        )}
+                                        disabled={status === 'loading' || !qwenCookie}
+                                    >
+                                        {status === 'loading' ? (
+                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                            <CheckCircle2 className="w-4 h-4" />
+                                        )}
+                                        {t('accounts.add.qwen.add_account') || '添加 Qwen 账号'}
+                                    </button>
+                                </div>
+                            )}
+
                             {/* 从数据库导入 */}
                             {activeTab === 'import' && (
                                 <div className="space-y-6 py-2">
@@ -693,12 +839,15 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                             <button
                                 className="flex-1 px-4 py-2.5 bg-gray-100 dark:bg-base-200 text-gray-700 dark:text-gray-300 font-medium rounded-xl hover:bg-gray-200 dark:hover:bg-base-300 transition-colors focus:outline-none focus:ring-2 focus:ring-200 dark:focus:ring-base-300"
                                 onClick={async () => {
-                                    if (status === 'loading' && activeTab === 'oauth') {
-                                        await cancelOAuthLogin();
+                                    try {
+                                        if (status === 'loading' && activeTab === 'oauth') {
+                                            await cancelOAuthLogin();
+                                        }
+                                    } catch (e) {
+                                        console.error('Cancel OAuth error:', e);
                                     }
                                     setIsOpen(false);
                                 }}
-                                disabled={status === 'success'} // Only disable on success, allow cancel on loading
                             >
                                 {t('accounts.add.btn_cancel')}
                             </button>

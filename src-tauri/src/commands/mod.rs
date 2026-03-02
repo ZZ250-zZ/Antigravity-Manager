@@ -47,7 +47,202 @@ pub async fn add_account(
     Ok(account)
 }
 
-/// 删除账号
+/// 添加 Qwen 账号（Cookie方式）
+#[tauri::command]
+pub async fn add_qwen_account(
+    app: tauri::AppHandle,
+    email: String,
+    cookie_json: String,
+) -> Result<Account, String> {
+    use crate::models::{Account, TokenData};
+    use crate::modules::account;
+    use crate::proxy::providers::qwen::signer::CookieData;
+
+    // 解析 Cookie，如果失败尝试解析简化格式（只有 name, value, domain）
+    let cookies: Vec<CookieData> = match serde_json::from_str(&cookie_json) {
+        Ok(cookies) => cookies,
+        Err(_) => {
+            // 尝试解析简化格式
+            let simplified: Vec<serde_json::Value> = serde_json::from_str(&cookie_json)
+                .map_err(|e| format!("无效的Cookie格式: {}", e))?;
+            
+            // 自动补全缺失字段
+            simplified.into_iter().map(|item| {
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let domain = item.get("domain").and_then(|v| v.as_str()).unwrap_or(".qianwen.com").to_string();
+                
+                CookieData {
+                    name,
+                    value,
+                    domain,
+                    path: "/".to_string(), // 自动补全 path
+                    expires: item.get("expires").and_then(|v| v.as_i64()),
+                }
+            }).collect()
+        }
+    };
+
+    if cookies.is_empty() {
+        return Err("Cookie列表为空".to_string());
+    }
+
+    // 序列化为完整的 JSON 格式
+    let complete_cookie_json = serde_json::to_string(&cookies)
+        .map_err(|e| format!("序列化Cookie失败: {}", e))?;
+
+    // 创建 TokenData，Cookie 存储在 access_token 字段
+    let token = TokenData {
+        access_token: complete_cookie_json,
+        refresh_token: String::new(),
+        expires_in: 3600 * 24 * 30, // 30天
+        expiry_timestamp: chrono::Utc::now().timestamp() + 3600 * 24 * 30,
+        token_type: "Bearer".to_string(),
+        email: Some(email.clone()),
+        project_id: None, // Qwen 不需要 project_id
+        session_id: Some(uuid::Uuid::new_v4().to_string()), // 生成 session_id
+    };
+
+    // 创建账号
+    let account_id = uuid::Uuid::new_v4().to_string();
+    let mut account = Account::new(account_id, email, token);
+
+    // 保存账号
+    account::save_account(&account)
+        .map_err(|e| format!("保存账号失败: {}", e))?;
+
+    // 更新账号索引
+    let mut index = account::load_account_index()
+        .map_err(|e| format!("加载账号索引失败: {}", e))?;
+    index.accounts.push(crate::models::AccountSummary {
+        id: account.id.clone(),
+        email: account.email.clone(),
+        name: account.name.clone(),
+        disabled: account.disabled,
+        proxy_disabled: account.proxy_disabled,
+        protected_models: account.protected_models.iter().cloned().collect(),
+        created_at: account.created_at,
+        last_used: account.last_used,
+    });
+    account::save_account_index(&index)
+        .map_err(|e| format!("保存账号索引失败: {}", e))?;
+
+    // 重载账号池
+    let _ = crate::commands::proxy::reload_proxy_accounts(
+        app.state::<crate::commands::proxy::ProxyServiceState>(),
+    )
+    .await;
+
+    // 同步托盘
+    crate::modules::tray::update_tray_menus(&app);
+
+    Ok(account)
+}
+
+/// 检查 Qwen Cookie 有效性
+/// 
+/// 验证方式: 调用用户信息接口 https://api.qianwen.com/growth/user/benefit/user/member/info
+/// 验证条件: 返回200 且 success=true
+#[tauri::command]
+pub async fn check_qwen_cookie(cookie_json: String) -> Result<bool, String> {
+    use crate::proxy::providers::qwen::client::QwenClient;
+
+    tracing::debug!("[check_qwen_cookie] ========== Cookie Check Started ==========");
+    tracing::debug!("[check_qwen_cookie] Input cookie_json length: {}", cookie_json.len());
+
+    // 解析 Cookie，如果失败尝试解析简化格式
+    let cookies: Vec<crate::proxy::providers::qwen::signer::CookieData> = match serde_json::from_str(&cookie_json) {
+        Ok(cookies) => {
+            tracing::debug!("[check_qwen_cookie] Parsed as standard format, count: {}", cookies.len());
+            cookies
+        }
+        Err(e) => {
+            tracing::debug!("[check_qwen_cookie] Standard parse failed: {}, trying simplified format", e);
+            // 尝试解析简化格式
+            let simplified: Vec<serde_json::Value> = serde_json::from_str(&cookie_json)
+                .map_err(|e| format!("无效的Cookie格式: {}", e))?;
+            
+            tracing::debug!("[check_qwen_cookie] Simplified format parsed, count: {}", simplified.len());
+            
+            // 自动补全缺失字段
+            simplified.into_iter().map(|item| {
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let domain = item.get("domain").and_then(|v| v.as_str()).unwrap_or(".qianwen.com").to_string();
+                
+                crate::proxy::providers::qwen::signer::CookieData {
+                    name,
+                    value,
+                    domain,
+                    path: "/".to_string(),
+                    expires: item.get("expires").and_then(|v| v.as_i64()),
+                }
+            }).collect()
+        }
+    };
+
+    if cookies.is_empty() {
+        tracing::debug!("[check_qwen_cookie] No cookies found after parsing");
+        return Ok(false);
+    }
+
+    // 打印解析后的 cookie 名称用于调试
+    let cookie_names: Vec<_> = cookies.iter().map(|c| c.name.clone()).collect();
+    tracing::debug!("[check_qwen_cookie] Parsed cookie names: {:?}", cookie_names);
+
+    // 检查必要的 cookie 是否存在
+    let has_csrf = cookies.iter().any(|c| c.name == "XSRF-TOKEN");
+    let has_login_id = cookies.iter().any(|c| c.name == "loginId");
+    let has_aliyun_key = cookies.iter().any(|c| c.name.contains("aliyun"));
+    
+    tracing::debug!("[check_qwen_cookie] Cookie analysis:");
+    tracing::debug!("[check_qwen_cookie]   - Has XSRF-TOKEN: {}", has_csrf);
+    tracing::debug!("[check_qwen_cookie]   - Has loginId: {}", has_login_id);
+    tracing::debug!("[check_qwen_cookie]   - Has aliyun key: {}", has_aliyun_key);
+
+    // 重新序列化为 JSON 字符串
+    let cookie_json_ref = serde_json::to_string(&cookies).map_err(|e| format!("序列化Cookie失败: {}", e))?;
+    tracing::debug!("[check_qwen_cookie] Serialized cookie_json length: {}", cookie_json_ref.len());
+
+    // 调用用户信息接口验证 Cookie 有效性
+    tracing::debug!("[check_qwen_cookie] Calling QwenClient::check_user_info...");
+    let client = QwenClient::new();
+    match client.check_user_info(&cookie_json_ref).await {
+        Ok(true) => {
+            tracing::debug!("[check_qwen_cookie] Cookie验证成功");
+            tracing::debug!("[check_qwen_cookie] ========== Cookie Check Ended (Success) ==========");
+            Ok(true)
+        }
+        Ok(false) => {
+            tracing::debug!("[check_qwen_cookie] Cookie无效或已过期");
+            tracing::debug!("[check_qwen_cookie] ========== Cookie Check Ended (Invalid) ==========");
+            Ok(false)
+        }
+        Err(e) => {
+            tracing::debug!("[check_qwen_cookie] 验证请求失败: {}", e);
+            tracing::debug!("[check_qwen_cookie] ========== Cookie Check Ended (Error) ==========");
+            Ok(false)
+        }
+    }
+}
+
+/// 准备 Qwen OAuth 登录 - 打开浏览器到 Qwen 登录页
+/// 用户需手动完成登录后复制 Cookie
+#[tauri::command]
+pub async fn prepare_qwen_oauth(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let url = "https://www.qianwen.com/";
+    
+    // 使用 OpenerExt 打开系统浏览器
+    if let Err(e) = app.opener().open_url(url, None::<&str>) {
+        crate::modules::logger::log_warn(&format!("打开浏览器失败: {}", e));
+    }
+    
+    Ok(serde_json::json!({
+        "url": url,
+        "hint": "请在浏览器中完成登录，然后复制 Cookie"
+    }))
+}
+
 /// 删除账号
 #[tauri::command]
 pub async fn delete_account(

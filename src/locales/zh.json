@@ -247,6 +247,7 @@
             "tabs": {
                 "oauth": "OAuth 授权",
                 "token": "Refresh Token",
+                "qwen": "Qwen",
                 "import": "从数据库导入"
             },
             "oauth": {
@@ -267,6 +268,20 @@
                 "popup_blocked": "弹窗被拦截，请允许弹出窗口",
                 "manual_submitting": "正在提交认证码...",
                 "manual_submitted": "认证码已提交，后台处理中..."
+            },
+            "qwen": {
+                "desc": "1. 点击按钮打开Qwen登录页 2. 完成登录 3. 复制Cookie粘贴到下方",
+                "open_browser": "打开 Qwen 登录页",
+                "cookie_label": "Cookie JSON",
+                "cookie_placeholder": "Cookie JSON 格式示例",
+                "cookie_hint": "F12开发者工具 → Console → 粘贴上方脚本执行 → Cookie自动复制",
+                "account_name_label": "账号名称（可选）",
+                "account_name_placeholder": "自定义账号名称，如：我的Qwen账号",
+                "check_cookie": "检查Cookie有效性",
+                "add_account": "添加 Qwen 账号",
+                "cookie_valid": "Cookie有效！",
+                "cookie_invalid": "Cookie无效或已过期，请重新登录",
+                "script_copied": "脚本已复制到剪贴板，请在Qwen页面F12控制台粘贴执行"
             },
             "token": {
                 "label": "Refresh Token",

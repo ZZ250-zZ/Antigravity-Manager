@@ -425,6 +425,9 @@ pub fn run() {
             // Account management commands
             commands::list_accounts,
             commands::add_account,
+            commands::add_qwen_account,
+            commands::check_qwen_cookie,
+            commands::prepare_qwen_oauth,
             commands::delete_account,
             commands::delete_accounts,
             commands::reorder_accounts,
