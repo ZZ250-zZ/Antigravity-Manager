@@ -151,7 +151,9 @@ pub async fn check_qwen_cookie(cookie_json: String) -> Result<bool, String> {
     tracing::debug!("[check_qwen_cookie] Input cookie_json length: {}", cookie_json.len());
 
     // 解析 Cookie，如果失败尝试解析简化格式
-    let cookies: Vec<crate::proxy::providers::qwen::signer::CookieData> = match serde_json::from_str(&cookie_json) {
+    let cookies: Vec<crate::proxy::providers::qwen::signer::CookieData> = match 
+        serde_json::from_str::<Vec<crate::proxy::providers::qwen::signer::CookieData>>(&cookie_json) 
+    {
         Ok(cookies) => {
             tracing::debug!("[check_qwen_cookie] Parsed as standard format, count: {}", cookies.len());
             cookies
@@ -186,23 +188,16 @@ pub async fn check_qwen_cookie(cookie_json: String) -> Result<bool, String> {
         return Ok(false);
     }
 
-    // 打印解析后的 cookie 名称用于调试
-    let cookie_names: Vec<_> = cookies.iter().map(|c| c.name.clone()).collect();
-    tracing::debug!("[check_qwen_cookie] Parsed cookie names: {:?}", cookie_names);
-
     // 检查必要的 cookie 是否存在
     let has_csrf = cookies.iter().any(|c| c.name == "XSRF-TOKEN");
     let has_login_id = cookies.iter().any(|c| c.name == "loginId");
     let has_aliyun_key = cookies.iter().any(|c| c.name.contains("aliyun"));
     
-    tracing::debug!("[check_qwen_cookie] Cookie analysis:");
-    tracing::debug!("[check_qwen_cookie]   - Has XSRF-TOKEN: {}", has_csrf);
-    tracing::debug!("[check_qwen_cookie]   - Has loginId: {}", has_login_id);
-    tracing::debug!("[check_qwen_cookie]   - Has aliyun key: {}", has_aliyun_key);
+    tracing::debug!("[check_qwen_cookie] Cookie analysis: count={}, XSRF-TOKEN={}, loginId={}, aliyun={}", 
+        cookies.len(), has_csrf, has_login_id, has_aliyun_key);
 
     // 重新序列化为 JSON 字符串
     let cookie_json_ref = serde_json::to_string(&cookies).map_err(|e| format!("序列化Cookie失败: {}", e))?;
-    tracing::debug!("[check_qwen_cookie] Serialized cookie_json length: {}", cookie_json_ref.len());
 
     // 调用用户信息接口验证 Cookie 有效性
     tracing::debug!("[check_qwen_cookie] Calling QwenClient::check_user_info...");

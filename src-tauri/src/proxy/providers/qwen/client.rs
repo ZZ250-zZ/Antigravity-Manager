@@ -153,6 +153,19 @@ impl QwenClient {
         let start_time = std::time::Instant::now();
         let cookies = parse_cookies_from_token(access_token)?;
         
+        // 从 Cookie 中提取关键字段
+        let xsrf_token = cookies
+            .iter()
+            .find(|c| c.name == "XSRF-TOKEN")
+            .map(|c| c.value.clone())
+            .unwrap_or_default();
+        
+        let device_id = cookies
+            .iter()
+            .find(|c| c.name == "x-deviceid")
+            .map(|c| c.value.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        
         // 使用 rquest 客户端（支持 TLS 指纹模拟）
         let client = Client::builder()
             .emulation(rquest_util::Emulation::Chrome123)
@@ -161,11 +174,10 @@ impl QwenClient {
             .map_err(|e| anyhow!("Failed to build rquest client: {}", e))?;
         
         // 使用 api.qianwen.com 域名
-        // ut 参数是时间戳+随机UUID，用于防重放攻击
-        let ut = format!("{}-{}", chrono::Utc::now().timestamp(), uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or(""));
+        // ut 参数是从 Cookie 中提取的 x-deviceid
         let url = format!(
             "https://api.qianwen.com/growth/user/benefit/user/member/info?biz_id=ai_qwen&chat_client=h5&device=pc&fr=pc&pr=qwen&ut={}",
-            ut
+            device_id
         );
         
         let cookie_header = cookies
@@ -187,6 +199,10 @@ impl QwenClient {
             ),
         );
         headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
             "accept",
             header::HeaderValue::from_static("application/json, text/plain, */*"),
         );
@@ -198,31 +214,54 @@ impl QwenClient {
             "referer",
             header::HeaderValue::from_static("https://www.qianwen.com/"),
         );
+        // 添加平台相关 headers（与浏览器请求一致）
+        headers.insert(
+            "x-platform",
+            header::HeaderValue::from_static("pc_tongyi"),
+        );
+        headers.insert(
+            "x-deviceid",
+            header::HeaderValue::from_str(&device_id)
+                .map_err(|e| anyhow!("Invalid device_id: {}", e))?,
+        );
+        if !xsrf_token.is_empty() {
+            headers.insert(
+                "x-xsrf-token",
+                header::HeaderValue::from_str(&xsrf_token)
+                    .map_err(|e| anyhow!("Invalid xsrf_token: {}", e))?,
+            );
+        }
+        // 添加 sec-ch-ua headers（浏览器指纹的一部分）
+        headers.insert(
+            "sec-ch-ua",
+            header::HeaderValue::from_static("\"Chromium\";v=\"145\", \"Not:A-Brand\";v=\"99\""),
+        );
+        headers.insert(
+            "sec-ch-ua-mobile",
+            header::HeaderValue::from_static("?0"),
+        );
+        headers.insert(
+            "sec-ch-ua-platform",
+            header::HeaderValue::from_static("\"Windows\""),
+        );
+
+        // 请求体（与浏览器请求一致）
+        let request_body = r#"{"clientChannel": "PC"}"#;
 
         // ========== DEBUG 日志开始 ==========
         tracing::debug!("[check_user_info] ========== HTTP Request Details ==========");
         tracing::debug!("[check_user_info] Method: POST");
         tracing::debug!("[check_user_info] URL: {}", url);
         tracing::debug!("[check_user_info] TLS Emulation: Chrome123 (rquest)");
+        tracing::debug!("[check_user_info] Cookie count: {}", cookies.len());
+        tracing::debug!("[check_user_info] XSRF-Token from cookie: {}", if xsrf_token.is_empty() { "(not found)" } else { "(found)" });
+        tracing::debug!("[check_user_info] DeviceID from cookie: {}", device_id);
         
-        // 打印 Cookie 详情（只显示名称和域名，隐藏值）
-        tracing::debug!("[check_user_info] Parsed Cookies (count: {}):", cookies.len());
-        for cookie in &cookies {
-            tracing::debug!(
-                "[check_user_info]   - name: {}, domain: {}, path: {}, expires: {:?}",
-                cookie.name,
-                cookie.domain,
-                cookie.path,
-                cookie.expires
-            );
-        }
-        
-        // 打印完整的请求头
+        // 打印完整的请求头（Cookie 只显示名称列表）
         tracing::debug!("[check_user_info] Request Headers:");
         for (name, value) in headers.iter() {
             let val_str = value.to_str().unwrap_or("(binary)");
             if name.as_str().to_lowercase() == "cookie" {
-                // Cookie 只打印名称列表，不打印值（保护隐私）
                 let cookie_names: Vec<&str> = val_str.split(';').map(|c| c.trim().split('=').next().unwrap_or("")).collect();
                 tracing::debug!("  {}: {:?}", name, cookie_names);
             } else {
@@ -230,19 +269,12 @@ impl QwenClient {
             }
         }
         
-        // 浏览器指纹信息
-        tracing::debug!("[check_user_info] Browser Fingerprint:");
-        tracing::debug!("[check_user_info]   User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36");
-        tracing::debug!("[check_user_info]   Accept: application/json, text/plain, */*");
-        tracing::debug!("[check_user_info]   Accept-Language: zh-CN,zh;q=0.9,en;q=0.8");
-        tracing::debug!("[check_user_info]   Referer: https://www.qianwen.com/");
-        tracing::debug!("[check_user_info]   Origin: https://www.qianwen.com");
-        tracing::debug!("[check_user_info] Request Body: (empty)");
+        tracing::debug!("[check_user_info] Request Body: {}", request_body);
         tracing::debug!("[check_user_info] ========== Sending Request ==========");
         // ========== DEBUG 日志结束 ==========
         
         // 使用 POST 请求（405 错误表明 GET 不被允许）
-        let response = client.post(&url).headers(headers).body("").send().await
+        let response = client.post(&url).headers(headers).body(request_body).send().await
             .map_err(|e| anyhow!("Request failed: {}", e))?;
 
         let status = response.status();
