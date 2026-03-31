@@ -14,6 +14,9 @@ dist-ssr
 .vite
 dist
 
+mydoc
+AGENTS.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
