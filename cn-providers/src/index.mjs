@@ -88,7 +88,9 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     if (!wantStream) {
       // 非流式：收集完整回复后返回
-      const response = await collectNonStreamResponse(providerStream, providerName, model);
+      // _isOpenAIFormat 的 Provider 使用通用 OpenAI 格式解析器（default case）
+      const nameForParser = _isOpenAIFormat ? '_openai_compat' : providerName;
+      const response = await collectNonStreamResponse(providerStream, nameForParser, model);
       cleanupLater(conversationId);
       return res.json(response);
     }

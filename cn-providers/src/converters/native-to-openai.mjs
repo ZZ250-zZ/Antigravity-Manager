@@ -310,7 +310,13 @@ function extractFullContent(parsed, providerName, prev) {
       if (typeof parsed.answer === 'string') return parsed.answer;
       return prev;
     }
-    default:
+    default: {
+      // 兜底：尝试标准 OpenAI SSE 格式 (choices[0].delta.content)
+      const delta = parsed.choices?.[0]?.delta?.content;
+      if (typeof delta === 'string') return prev + delta;
+      if (typeof parsed.content === 'string') return parsed.content;
+      if (typeof parsed.text === 'string') return prev + parsed.text;
       return prev;
+    }
   }
 }
