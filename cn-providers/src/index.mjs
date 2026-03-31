@@ -84,25 +84,26 @@ app.post('/v1/chat/completions', async (req, res) => {
       tracker,
     });
 
-    const { stream: providerStream, conversationId } = result;
+    const { stream: providerStream, conversationId, _isOpenAIFormat } = result;
 
     if (!wantStream) {
       // 非流式：收集完整回复后返回
       const response = await collectNonStreamResponse(providerStream, providerName, model);
-      // 流结束后异步清理会话
       cleanupLater(conversationId);
       return res.json(response);
     }
 
-    // 流式：通过 TransformStream 转为 OpenAI SSE 格式
+    // 流式响应
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
 
-    const transformer = createOpenAIStreamTransformer(providerName, model);
-    const openaiStream = providerStream.pipeThrough(transformer);
-    const reader = openaiStream.getReader();
+    // 官方 API 模式的 Provider 已返回 OpenAI 格式，无需转换
+    const finalStream = _isOpenAIFormat
+      ? providerStream
+      : providerStream.pipeThrough(createOpenAIStreamTransformer(providerName, model));
+    const reader = finalStream.getReader();
 
     // 持续读取转换后的 SSE 片段并写入 HTTP 响应
     const pump = async () => {
@@ -163,10 +164,22 @@ app.listen(config.port, () => {
 
   // 如果环境变量中有预设的 token，自动注册
   const envTokens = {
+    // Web 模式 (Cookie/token)
     QWEN_TOKEN: 'qwen',
     KIMI_TOKEN: 'kimi',
     ZHIPU_TOKEN: 'zhipu',
     DOUBAO_TOKEN: 'doubao',
+    DEEPSEEK_TOKEN: 'deepseek',
+    HAILUO_TOKEN: 'hailuo',
+    STEP_TOKEN: 'step',
+    SPARK_TOKEN: 'spark',
+    METASO_TOKEN: 'metaso',
+    YUANBAO_TOKEN: 'yuanbao',
+    // 官方 API 模式 (API Key)
+    BAICHUAN_API_KEY: 'baichuan',
+    YI_API_KEY: 'yi',
+    SENSENOVA_API_KEY: 'sensenova',
+    TIANGONG_API_KEY: 'tiangong',
   };
   for (const [envKey, providerName] of Object.entries(envTokens)) {
     const val = process.env[envKey];

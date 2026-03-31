@@ -94,6 +94,39 @@ export function createOpenAIStreamTransformer(providerName, model) {
           return null;
         }
       }
+      case 'deepseek': {
+        // DeepSeek SSE: choices[0].delta.content 为增量
+        const delta = parsed.choices?.[0]?.delta;
+        if (delta && typeof delta.content === 'string') {
+          return delta.content;
+        }
+        return null;
+      }
+      case 'hailuo':
+      case 'step':
+      case 'spark':
+      case 'metaso':
+      case 'yuanbao': {
+        // 通用 Web Provider: 尝试从 content / text / choices.delta.content 提取
+        // 优先检查 OpenAI 格式 (choices.delta.content)
+        const oaiDelta = parsed.choices?.[0]?.delta?.content;
+        if (typeof oaiDelta === 'string') return oaiDelta;
+        // 尝试 content 字段 (累积全文)
+        if (typeof parsed.content === 'string') {
+          const delta = parsed.content.slice(prevContent.length);
+          prevContent = parsed.content;
+          return delta || null;
+        }
+        // 尝试 text 字段 (增量)
+        if (typeof parsed.text === 'string') return parsed.text;
+        // 尝试 answer 字段 (秘塔等搜索型)
+        if (typeof parsed.answer === 'string') {
+          const delta = parsed.answer.slice(prevContent.length);
+          prevContent = parsed.answer;
+          return delta || null;
+        }
+        return null;
+      }
       default:
         return null;
     }
@@ -103,6 +136,8 @@ export function createOpenAIStreamTransformer(providerName, model) {
   function isDone(parsed) {
     if (providerName === 'kimi' && parsed.event === 'all_done') return true;
     if (providerName === 'doubao' && parsed.event_type === 2003) return true;
+    // DeepSeek: finish_reason=stop
+    if (providerName === 'deepseek' && parsed.choices?.[0]?.finish_reason === 'stop') return true;
     return false;
   }
 
@@ -254,6 +289,26 @@ function extractFullContent(parsed, providerName, prev) {
       } catch {
         return prev;
       }
+    }
+    case 'deepseek': {
+      const delta = parsed.choices?.[0]?.delta?.content;
+      return typeof delta === 'string' ? prev + delta : prev;
+    }
+    case 'hailuo':
+    case 'step':
+    case 'spark':
+    case 'metaso':
+    case 'yuanbao': {
+      // 尝试 OpenAI 格式
+      const oaiDelta = parsed.choices?.[0]?.delta?.content;
+      if (typeof oaiDelta === 'string') return prev + oaiDelta;
+      // 累积全文
+      if (typeof parsed.content === 'string') return parsed.content;
+      // 增量
+      if (typeof parsed.text === 'string') return prev + parsed.text;
+      // 搜索型
+      if (typeof parsed.answer === 'string') return parsed.answer;
+      return prev;
     }
     default:
       return prev;
