@@ -28,11 +28,13 @@ async function main() {
   // 提取各 provider 的 token
   const providers = {
     kimi: {
-      domains: ['kimi.moonshot.cn'],
+      domains: ['kimi.moonshot.cn', 'kimi.com'],
       extract: (cookies) => {
         const at = cookies.find(c => c.name === 'access_token');
         const rt = cookies.find(c => c.name === 'refresh_token');
-        return at?.value || rt?.value || null;
+        // kimi-auth: kimi.com 新域名使用 JWT token
+        const ka = cookies.find(c => c.name === 'kimi-auth');
+        return ka?.value || at?.value || rt?.value || null;
       },
     },
     step: {
@@ -79,10 +81,10 @@ async function main() {
     },
     deepseek: {
       domains: ['deepseek.com'],
-      extract: (cookies) => {
-        const ds = cookies.find(c => c.name === 'ds_session_token' || c.name === 'userToken');
-        return ds?.value || null;
-      },
+      // DeepSeek 用 localStorage 中的 userToken，不能从 Cookie 提取
+      // 需要单独从 CDP 页面的 localStorage 获取
+      extract: (cookies) => null,
+      note: '需要从 localStorage 提取 userToken',
     },
     momi: {
       domains: ['xiaomimimo.com'],
