@@ -46,6 +46,12 @@ __pycache__/
 *.pyc
 
 # Reference projects (for development only)
+Chat2API/
+_tmp_chat2api/
+
+# CN Providers debug data (may contain sensitive tokens/cookies)
+cn-providers/debug/
+cn-providers/*.png
 
 DOCKER_DEPLOYMENT.md
 pnpm-lock.yaml
