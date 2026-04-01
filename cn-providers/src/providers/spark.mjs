@@ -10,20 +10,20 @@
  *   - GtToken 可以为空
  */
 
-import { randomUUID } from 'node:crypto';
+// import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 
 const BASE_URL = 'https://xinghuo.xfyun.cn';
 
-/** 模型映射（暂无法通过 API 选择模型，统一为默认模型） */
-const MODEL_MAP = {
-  spark: 'spark',
-  'spark-ultra': 'spark',
-  'spark-max': 'spark',
-  'spark-pro': 'spark',
-  'spark-lite': 'spark',
-};
+/** 模型映射（暂无法通过 Web API 选择模型，统一为默认模型） */
+// const MODEL_MAP = {
+//   spark: 'spark',
+//   'spark-ultra': 'spark',
+//   'spark-max': 'spark',
+//   'spark-pro': 'spark',
+//   'spark-lite': 'spark',
+// };
 
 // function mapModel(model) {
 //   const m = (model ?? '').trim().toLowerCase();
@@ -147,7 +147,6 @@ export class SparkProvider {
       { name: 'chatId', value: chatListId },
       { name: 'options', value: JSON.stringify({ chatOption: { thinkPattern: 'auto' } }) },
       { name: 'GtToken', value: '' },
-      { name: 'clientType', value: '1' },
     ]);
 
     const chatReferer = `${BASE_URL}/desk?chatId=${chatListId}`;
