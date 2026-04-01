@@ -112,13 +112,13 @@ Node.js Sidecar (端口 8046)
 | DeepSeek | deepseek | ✅ 已完成 | WASM PoW |
 | Kimi | kimi | ✅ 已完成 | kimi-auth JWT (www.kimi.com) |
 | 智谱清言 | zhipu | ✅ 已完成 | X-Sign MD5 签名 |
-| 小米 MOMI | momi | ✅ 已完成 | Cookie 认证，https://aistudio.xiaomimimo.com/#/c |
+| 小米 MOMI | momi | ✅ 已完成 | Cookie 认证 |
 | 讯飞星火 | spark | ✅ 已完成 | 新 API + base64 SSE + deep_x1 过滤 |
-| 豆包 | doubao | ⚠️ 限流 | a_bogus/msToken 待调研复杂度 |
-| StepChat | step | ⚠️ Token 过期 | Connect Protocol, JWT 30 分钟 TTL |
+| 豆包 | doubao | ✅ 已完成 | a_bogus/msToken 服务端不强制验证 |
+| StepChat | step | ✅ 已完成 | Connect Protocol + JWT 过期预检 |
 | 秘塔搜索 | metaso | ⚠️ 限流 | Next.js RSC 迁移，429 限流 |
-| 海螺AI (MiniMax) | hailuo | ⚠️ 未测试 | Cookie 认证 |
-| 腾讯元宝 | yuanbao | ❌ API变更 | 已改为 Agent 架构，需重新逆向 |
+| 海螺AI (MiniMax) | hailuo | ✅ 已完成 | Cookie 认证 |
+| 腾讯元宝 | yuanbao | ✅ 已完成 | Agent 架构重写 |
 
 ## 7. 文档维护要求
 

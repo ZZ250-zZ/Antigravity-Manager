@@ -1,5 +1,7 @@
 # cn-providers 工具模块任务
 
+- [x] 流式 chat `httpRequest` 增加 `timeoutMs: 0`（11 个 provider）
+
 - [x] `src/config.mjs` 环境变量配置
 - [x] `src/http-client.mjs` wreq-js 封装（createSession + session.fetch，lazy init）
 - [x] `src/utils/sign.mjs` 智谱签名

@@ -1,6 +1,6 @@
 # CN Providers 逆向代理 - 任务计划与进度
 
-## 当前状态（2026-04-01 17:00 更新）
+## 当前状态（2026-04-01 更新）
 
 ### 已完成 ✅
 
@@ -17,15 +17,17 @@
 | Token 持久化 | 03-31 | `~/.antigravity_tools/cn_provider_tokens.json` |
 | TransformStream 改造 | 03-31 | 替换所有 `tee()` 为 `createIdExtractingPassthrough` |
 | CDP 连接修复 | 04-01 | 从 Playwright 切换到 puppeteer-core |
+| **SSE 胶水层解耦** | 04-01 | `native-to-openai.mjs` → `sse-registry.mjs` + 各 provider 注册 |
+| **Step JWT 过期预检** | 04-01 | 解析 `Oasis-Token` JWT exp，提前 5min 标记过期 |
+| **HTTP 超时保护** | 04-01 | `httpRequest` 默认 30s 超时；SSE 请求 `timeoutMs:0` |
+| **Rust CN Provider 路由** | 04-01 | `cn_provider.rs` + `CnProviderConfig` + 模型列表合并 |
 
 ### 待处理 📋
 
 | 任务 | 优先级 | 备注 |
 |------|--------|------|
 | 调研 Doubao a_bogus/msToken | 高 | 确认逆向复杂度后决定是否实现 |
-| Step Token 刷新机制 | 中 | JWT 30 分钟 TTL |
-| 模型映射方案 | 中 | 与 Rust 模型管理集成，自动获取模型列表 |
-| 账号池策略确认 | 中 | Rust 统一管理 |
+| Chat2API Git Submodule 集成 | 中 | axios-to-wreq 适配器 |
 | 逆向文档 + 通用抓取 SKILL | 低 | 通用抓取能力 |
 | Metaso 限流恢复后验证 | 低 | 429 限流中 |
 
@@ -91,27 +93,10 @@
 - **删除 API**: 未找到有效端点（`/api/user/agent/conversation/delete` 返回 404），best-effort 处理
 - **认证**: Cookie（`hy_user` + `hy_token` + `_qimei_uuid42`），无额外签名
 
-## 预存代码问题（非本次修改引入）
+## 预存代码问题（已全部修复）
 
-> 以下问题存在于修改前的代码中，按规则记录但不修改，等待确认后处理。
-
-1. **`native-to-openai.mjs` 中的 DEBUG 日志仍然活跃**
-   - 位置：第 47-49 行、第 231-234 行
-   - 影响：每次请求都会在 console 输出大量 `[DEBUG extractDelta]` 和 `[DEBUG chunk]` 日志
-   - 建议：移除或加环境变量开关
-
-2. **所有 HTTP 请求缺少超时设置**
-   - `httpRequest()` 调用没有 timeout 参数
-   - 如果上游 API 挂起，请求会无限等待
-   - 建议：添加 30 秒默认超时
-
-3. **Step JWT 30 分钟 TTL**
-   - Oasis-Token JWT 的 `exp` 只有 30 分钟
-   - 超过 30 分钟后 Step Provider 完全不可用
-   - 建议：实现 token 自动刷新或请求前 CDP 提取
-
+1. ~~**`native-to-openai.mjs` 中的 DEBUG 日志仍然活跃**~~ ✅ 解耦重构时已移除
+2. ~~**所有 HTTP 请求缺少超时设置**~~ ✅ `httpRequest` 已添加 30s 默认超时 + SSE 请求 `timeoutMs:0`
+3. ~~**Step JWT 30 分钟 TTL**~~ ✅ 已实现 JWT `exp` 预检 + `markExpired` 自动标记
 4. ~~**Yuanbao API 已过时**~~ ✅ 已在 04-01 完全重写
-
-5. **DeepSeek userToken 格式变更**
-   - localStorage 中 `userToken` 现在是 JSON wrapper `{"value":"...","__version":"0"}`
-   - 提取脚本已修复，但 provider 的认证方式可能需要跟进确认
+5. ~~**DeepSeek userToken 格式变更**~~ ✅ 提取脚本已处理 JSON wrapper 格式
