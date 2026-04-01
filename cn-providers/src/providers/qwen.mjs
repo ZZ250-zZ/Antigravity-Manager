@@ -200,6 +200,7 @@ export class QwenProvider {
         'X-Xsrf-Token': randomUUID(),
       },
       body: JSON.stringify(body),
+      timeoutMs: 0,
     });
 
     if (!res.ok || !res.body) {

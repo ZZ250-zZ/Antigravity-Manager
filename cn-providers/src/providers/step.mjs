@@ -273,6 +273,7 @@ export class StepProvider {
         method: 'POST',
         headers: this._headers({ 'Content-Type': 'application/connect+json' }),
         body: frame,
+        timeoutMs: 0,
       },
     );
 

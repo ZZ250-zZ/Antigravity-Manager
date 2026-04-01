@@ -34,14 +34,37 @@ function headersToObject(headers) {
   return { ...headers };
 }
 
+// 默认请求超时（毫秒），防止上游 API 挂起导致无限等待
+// SSE 流式请求应传入 timeoutMs: 0 来禁用超时
+const DEFAULT_TIMEOUT_MS = 30_000;
+
 /**
  * @param {string | URL} url
- * @param {import('wreq-js').RequestInit} [options]
+ * @param {import('wreq-js').RequestInit & { timeoutMs?: number }} [options]
+ *   timeoutMs: 超时毫秒数。0 = 不设超时（适用于 SSE 流式请求）。默认 30s。
  */
 export async function httpRequest(url, options = {}) {
   const session = await getSession();
-  return session.fetch(url, {
-    ...options,
-    headers: { ...defaultHeaders, ...headersToObject(options.headers) },
-  });
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...fetchOpts } = options;
+
+  if (timeoutMs <= 0) {
+    // SSE 等长连接场景，不设超时
+    return session.fetch(url, {
+      ...fetchOpts,
+      headers: { ...defaultHeaders, ...headersToObject(fetchOpts.headers) },
+    });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await session.fetch(url, {
+      ...fetchOpts,
+      headers: { ...defaultHeaders, ...headersToObject(fetchOpts.headers) },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }

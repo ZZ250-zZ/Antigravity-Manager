@@ -178,6 +178,7 @@ export class KimiProvider {
         Accept: 'text/event-stream',
       },
       body: JSON.stringify(body),
+      timeoutMs: 0,
     });
 
     if (!res.ok || !res.body) {

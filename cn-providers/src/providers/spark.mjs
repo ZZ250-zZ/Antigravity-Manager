@@ -167,6 +167,7 @@ export class SparkProvider {
         Botweb: '0',
       },
       body,
+      timeoutMs: 0,
     });
 
     if (!res.ok || !res.body) {

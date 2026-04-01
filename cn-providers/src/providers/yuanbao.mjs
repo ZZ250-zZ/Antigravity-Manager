@@ -198,6 +198,7 @@ export class YuanbaoProvider {
       method: 'POST',
       headers: this._chatHeaders(),
       body: JSON.stringify(body),
+      timeoutMs: 0,
     });
 
     if (!res.ok || !res.body) {

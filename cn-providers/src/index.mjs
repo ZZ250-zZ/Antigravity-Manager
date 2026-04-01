@@ -113,15 +113,20 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     // 持续读取转换后的 SSE 片段并写入 HTTP 响应
     const pump = async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(value);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!res.destroyed) res.write(value);
+        }
+      } catch (pumpErr) {
+        // 上游读取异常（如连接中断），记录但不抛出
+        console.error(`[SSE pump error] ${pumpErr.message ?? pumpErr}`);
+      } finally {
+        if (!res.destroyed) res.end();
+        const cleanupId = _idPromise ? await _idPromise : conversationId;
+        cleanupLater(cleanupId);
       }
-      res.end();
-      // 流结束后获取实际的 conversationId 做清理
-      const cleanupId = _idPromise ? await _idPromise : conversationId;
-      cleanupLater(cleanupId);
     };
 
     // 客户端断开时取消上游读取
