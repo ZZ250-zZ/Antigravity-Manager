@@ -316,6 +316,7 @@ impl AxumServer {
         integration: crate::modules::integration::SystemManager,
         cloudflared_state: Arc<crate::commands::cloudflared::CloudflaredState>,
         proxy_pool_config: crate::proxy::config::ProxyPoolConfig, // [NEW]
+        cn_provider_config: crate::proxy::config::CnProviderConfig, // [NEW] CN Provider sidecar 配置
     ) -> Result<(Self, tokio::task::JoinHandle<()>), String> {
         let custom_mapping_state = Arc::new(tokio::sync::RwLock::new(custom_mapping));
         let proxy_state = Arc::new(tokio::sync::RwLock::new(upstream_proxy.clone()));
@@ -326,7 +327,7 @@ impl AxumServer {
     proxy_pool_manager.clone().start_health_check_loop();
         let security_state = Arc::new(RwLock::new(security_config));
         let zai_state = Arc::new(RwLock::new(zai_config));
-        let cn_provider_state = Arc::new(RwLock::new(proxy_config.cn_provider.clone()));
+        let cn_provider_state = Arc::new(RwLock::new(cn_provider_config.clone()));
         let provider_rr = Arc::new(AtomicUsize::new(0));
         let zai_vision_mcp_state = Arc::new(crate::proxy::zai_vision_mcp::ZaiVisionMcpState::new());
         let experimental_state = Arc::new(RwLock::new(experimental_config));
@@ -370,7 +371,7 @@ impl AxumServer {
             proxy_pool_state: proxy_pool_state.clone(),
             proxy_pool_manager: proxy_pool_manager.clone(),
             qwen_signer: Arc::new(crate::proxy::providers::qwen::signer::Signer::new()),
-            cn_provider: Arc::new(RwLock::new(proxy_config.cn_provider.clone())),
+            cn_provider: Arc::new(RwLock::new(cn_provider_config.clone())),
         };
 
         // 构建路由 - 使用新架构的 handlers！
