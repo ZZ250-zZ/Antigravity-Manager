@@ -556,6 +556,10 @@ pub struct ProxyConfig {
     /// 代理池配置
     #[serde(default)]
     pub proxy_pool: ProxyPoolConfig,
+
+    /// CN Provider Sidecar 配置（国产大模型 Web 端代理）
+    #[serde(default)]
+    pub cn_provider: CnProviderConfig,
 }
 
 /// 上游代理配置
@@ -565,6 +569,31 @@ pub struct UpstreamProxyConfig {
     pub enabled: bool,
     /// 代理地址 (http://, https://, socks5://)
     pub url: String,
+}
+
+/// CN Provider Sidecar 配置
+/// 将请求转发到本地 Node.js sidecar 处理国产大模型 Web 端协议
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CnProviderConfig {
+    /// 是否启用 CN Provider 代理
+    #[serde(default)]
+    pub enabled: bool,
+    /// CN Provider Sidecar 地址 (默认 http://127.0.0.1:8046)
+    #[serde(default = "default_cn_provider_base_url")]
+    pub base_url: String,
+}
+
+impl Default for CnProviderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: default_cn_provider_base_url(),
+        }
+    }
+}
+
+fn default_cn_provider_base_url() -> String {
+    "http://127.0.0.1:8046".to_string()
 }
 
 impl Default for ProxyConfig {
@@ -593,6 +622,7 @@ impl Default for ProxyConfig {
             global_system_prompt: GlobalSystemPromptConfig::default(),
             proxy_pool: ProxyPoolConfig::default(),
             image_thinking_mode: None,
+            cn_provider: CnProviderConfig::default(),
         }
     }
 }

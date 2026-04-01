@@ -37,6 +37,16 @@ pub async fn handle_chat_completions(
         return intercept_chat_to_image(state, body, &model_name).await;
     }
 
+    // [NEW] CN Provider 路由：匹配国产大模型 model 名时，直接转发到 sidecar
+    {
+        let cn_cfg = state.cn_provider.read().await;
+        if cn_cfg.enabled && super::cn_provider::is_cn_provider_model(&model_name) {
+            tracing::info!("[CN-Provider] Routing model '{}' to sidecar", model_name);
+            drop(cn_cfg);
+            return Ok(super::cn_provider::forward_to_cn_provider(&state, body, &headers).await);
+        }
+    }
+
     // [FIX] 保存原始请求体的完整副本，用于日志记录
     // 这确保了即使结构体定义遗漏字段，日志也能完整记录所有参数
     let original_body = body.clone();
@@ -1574,7 +1584,7 @@ pub async fn handle_list_models(State(state): State<AppState>) -> impl IntoRespo
 
     let model_ids = get_all_dynamic_models(&state.custom_mapping, Some(&state.token_manager)).await;
 
-    let data: Vec<_> = model_ids
+    let mut data: Vec<_> = model_ids
         .into_iter()
         .map(|id| {
             json!({
@@ -1585,6 +1595,11 @@ pub async fn handle_list_models(State(state): State<AppState>) -> impl IntoRespo
             })
         })
         .collect();
+
+    // [NEW] 合并 CN Provider sidecar 的模型列表
+    let cn_cfg = state.cn_provider.read().await.clone();
+    let cn_models = super::cn_provider::fetch_cn_models(&cn_cfg).await;
+    data.extend(cn_models);
 
     Json(json!({
         "object": "list",

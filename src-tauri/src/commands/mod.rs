@@ -560,6 +560,8 @@ pub async fn save_config(
             .await;
         // [NEW] 更新 User-Agent 配置
         instance.axum_server.update_user_agent(&config.proxy).await;
+        // [NEW] 更新 CN Provider 配置
+        instance.axum_server.update_cn_provider(&config.proxy).await;
         // 更新 Thinking Budget 配置
         crate::proxy::update_thinking_budget_config(config.proxy.thinking_budget.clone());
         // [NEW] 更新全局系统提示词配置

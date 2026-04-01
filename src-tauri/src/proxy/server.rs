@@ -116,6 +116,7 @@ pub struct AppState {
     pub proxy_pool_state: Arc<tokio::sync::RwLock<crate::proxy::config::ProxyPoolConfig>>, // [FIX Web Mode]
     pub proxy_pool_manager: Arc<crate::proxy::proxy_pool::ProxyPoolManager>, // [FIX Web Mode]
     pub qwen_signer: Arc<crate::proxy::providers::qwen::signer::Signer>, // [NEW] Qwen 签名管理器
+    pub cn_provider: Arc<RwLock<crate::proxy::config::CnProviderConfig>>, // [NEW] CN Provider sidecar 配置
 }
 
 // 为 AppState 实现 FromRef，以便中间件提取 security 状态
@@ -228,6 +229,7 @@ pub struct AxumServer {
     pub token_manager: Arc<TokenManager>, // [NEW] 暴露出 TokenManager 供反代服务复用
     pub proxy_pool_state: Arc<tokio::sync::RwLock<crate::proxy::config::ProxyPoolConfig>>, // [NEW] 代理池配置状态
     pub proxy_pool_manager: Arc<crate::proxy::proxy_pool::ProxyPoolManager>, // [NEW] 暴露代理池管理器供命令调用
+    pub cn_provider_state: Arc<RwLock<crate::proxy::config::CnProviderConfig>>, // [NEW] CN Provider sidecar 配置
 }
 
 impl AxumServer {
@@ -263,6 +265,12 @@ impl AxumServer {
         let mut zai = self.zai_state.write().await;
         *zai = config.zai.clone();
         tracing::info!("z.ai 配置已热更新");
+    }
+
+    pub async fn update_cn_provider(&self, config: &crate::proxy::config::ProxyConfig) {
+        let mut cn = self.cn_provider_state.write().await;
+        *cn = config.cn_provider.clone();
+        tracing::info!("CN Provider 配置已热更新: enabled={}, base_url={}", config.cn_provider.enabled, config.cn_provider.base_url);
     }
 
     pub async fn update_experimental(&self, config: &crate::proxy::config::ProxyConfig) {
@@ -318,6 +326,7 @@ impl AxumServer {
     proxy_pool_manager.clone().start_health_check_loop();
         let security_state = Arc::new(RwLock::new(security_config));
         let zai_state = Arc::new(RwLock::new(zai_config));
+        let cn_provider_state = Arc::new(RwLock::new(proxy_config.cn_provider.clone()));
         let provider_rr = Arc::new(AtomicUsize::new(0));
         let zai_vision_mcp_state = Arc::new(crate::proxy::zai_vision_mcp::ZaiVisionMcpState::new());
         let experimental_state = Arc::new(RwLock::new(experimental_config));
@@ -361,6 +370,7 @@ impl AxumServer {
             proxy_pool_state: proxy_pool_state.clone(),
             proxy_pool_manager: proxy_pool_manager.clone(),
             qwen_signer: Arc::new(crate::proxy::providers::qwen::signer::Signer::new()),
+            cn_provider: Arc::new(RwLock::new(proxy_config.cn_provider.clone())),
         };
 
         // 构建路由 - 使用新架构的 handlers！
@@ -725,6 +735,7 @@ impl AxumServer {
             token_manager: token_manager.clone(),
             proxy_pool_state,
             proxy_pool_manager,
+            cn_provider_state,
         };
 
         // 在新任务中启动服务器
