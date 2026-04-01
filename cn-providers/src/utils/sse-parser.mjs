@@ -42,7 +42,8 @@ export function parseSSEStream(readableStream, { onEvent, onDone, onError }) {
         buffer = lines.pop() ?? '';
         for (const line of lines) {
           if (handleLine(line.trimEnd(), safeDone)) {
-            await reader.cancel().catch(() => {});
+            // wreq-js 不兼容 cancel()，用 releaseLock 替代
+            reader.releaseLock();
             return;
           }
         }
@@ -51,7 +52,7 @@ export function parseSSEStream(readableStream, { onEvent, onDone, onError }) {
       if (buffer) {
         for (const part of buffer.split('\n')) {
           if (handleLine(part.trimEnd(), safeDone)) {
-            await reader.cancel().catch(() => {});
+            reader.releaseLock();
             return;
           }
         }

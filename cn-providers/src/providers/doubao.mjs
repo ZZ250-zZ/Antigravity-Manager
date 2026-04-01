@@ -5,6 +5,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { uuid } from '../utils/sign.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
 
 const DOUBAO_ORIGIN = 'https://www.doubao.com';
 const COMPLETION_PATH = '/samantha/chat/completion';
@@ -144,7 +145,8 @@ async function readDoubaoConversationIdFromStream(stream) {
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
+    reader.releaseLock();
   }
   return convId;
 }
@@ -246,15 +248,26 @@ export class DoubaoProvider {
       throw new Error(`Doubao chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    const [forParse, forClient] = res.body.tee();
-    const conversationIdPromise = readDoubaoConversationIdFromStream(forParse);
-    const conversationId = await conversationIdPromise;
+    // 用 passthrough 提取 conversation_id，避免 tee()（wreq-js tee 在 Windows 上有兼容问题）
+    const { stream, idPromise } = createIdExtractingPassthrough(res.body, (outer) => {
+      // 豆包的 event_data 是嵌套 JSON 字符串
+      if (outer.event_type === 2005) return null; // 错误事件跳过
+      if (typeof outer.event_data !== 'string') return null;
+      try {
+        const ed = JSON.parse(outer.event_data);
+        const cid = ed.conversation_id;
+        if (cid && typeof cid === 'string' && cid !== '0') return cid;
+      } catch { /* ignore */ }
+      return null;
+    });
 
     const tracker = options.tracker;
-    if (tracker && conversationId) {
-      tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
-    }
+    idPromise.then((conversationId) => {
+      if (tracker && conversationId) {
+        tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
+      }
+    });
 
-    return { stream: forClient, conversationId };
+    return { stream, conversationId: '', _idPromise: idPromise };
   }
 }

@@ -84,14 +84,15 @@ app.post('/v1/chat/completions', async (req, res) => {
       tracker,
     });
 
-    const { stream: providerStream, conversationId, _isOpenAIFormat } = result;
+    const { stream: providerStream, conversationId, _isOpenAIFormat, _idPromise } = result;
 
     if (!wantStream) {
       // 非流式：收集完整回复后返回
-      // _isOpenAIFormat 的 Provider 使用通用 OpenAI 格式解析器（default case）
       const nameForParser = _isOpenAIFormat ? '_openai_compat' : providerName;
       const response = await collectNonStreamResponse(providerStream, nameForParser, model);
-      cleanupLater(conversationId);
+      // _idPromise 提供的 ID 会在 provider 内部通过 tracker 自动处理
+      const cleanupId = _idPromise ? await _idPromise : conversationId;
+      cleanupLater(cleanupId);
       return res.json(response);
     }
 
@@ -115,7 +116,9 @@ app.post('/v1/chat/completions', async (req, res) => {
         res.write(value);
       }
       res.end();
-      cleanupLater(conversationId);
+      // 流结束后获取实际的 conversationId 做清理
+      const cleanupId = _idPromise ? await _idPromise : conversationId;
+      cleanupLater(cleanupId);
     };
 
     // 客户端断开时取消上游读取

@@ -78,7 +78,8 @@ async function readChatIdFromStream(stream) {
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    // wreq-js 的 ReadableStream 不兼容 cancel()，用 releaseLock 替代
+    reader.releaseLock();
   }
   return chatId;
 }

@@ -46,8 +46,13 @@ export function createOpenAIStreamTransformer(providerName, model) {
   function extractDelta(parsed) {
     switch (providerName) {
       case 'qwen': {
-        // incremental 通常为 false，content 是累积全文
-        const full = typeof parsed.content === 'string' ? parsed.content : null;
+        // Qwen 新版 API：文本在 contents[0].content（数组），旧版在 content（字符串）
+        let full = null;
+        if (Array.isArray(parsed.contents) && parsed.contents.length > 0) {
+          full = typeof parsed.contents[0].content === 'string' ? parsed.contents[0].content : null;
+        } else if (typeof parsed.content === 'string') {
+          full = parsed.content;
+        }
         if (full === null) return null;
         const delta = full.slice(prevContent.length);
         prevContent = full;
@@ -154,7 +159,6 @@ export function createOpenAIStreamTransformer(providerName, model) {
         const payload = line.slice(5).trimStart();
         if (payload === '[DONE]') {
           finished = true;
-          // 发送 finish_reason=stop 然后 [DONE]
           controller.enqueue(encodeChunk({}, 'stop'));
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           return;
@@ -168,13 +172,11 @@ export function createOpenAIStreamTransformer(providerName, model) {
           continue;
         }
 
-        // 先发一个 role=assistant 的首帧（OpenAI 规范）
         if (!sentFirstRole) {
           sentFirstRole = true;
           controller.enqueue(encodeChunk({ role: 'assistant', content: '' }));
         }
 
-        // 检测流结束
         if (isDone(parsed)) {
           finished = true;
           controller.enqueue(encodeChunk({}, 'stop'));
@@ -265,8 +267,13 @@ export async function collectNonStreamResponse(stream, providerName, model) {
 /** 从单条 SSE 数据中提取当前累积的完整文本 */
 function extractFullContent(parsed, providerName, prev) {
   switch (providerName) {
-    case 'qwen':
+    case 'qwen': {
+      // 新版：contents[0].content；旧版：content
+      if (Array.isArray(parsed.contents) && parsed.contents.length > 0) {
+        return typeof parsed.contents[0].content === 'string' ? parsed.contents[0].content : prev;
+      }
       return typeof parsed.content === 'string' ? parsed.content : prev;
+    }
     case 'kimi':
       // 增量拼接
       if (parsed.event === 'cmpl' && typeof parsed.text === 'string') {

@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
 
 const BASE_URL = 'https://stepchat.cn';
 
@@ -93,7 +94,8 @@ async function readConvIdFromStream(stream) {
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
+    reader.releaseLock();
   }
   return convId;
 }
@@ -176,16 +178,17 @@ export class StepProvider {
       throw new Error(`Step chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    // 如果创建时没拿到 convId，从 SSE 流中解析
+    // 如果创建时没拿到 convId，从 SSE 流中解析（避免 tee）
     if (!convId) {
-      const [forParse, forClient] = res.body.tee();
-      convId = await readConvIdFromStream(forParse);
-
+      const { stream, idPromise } = createIdExtractingPassthrough(res.body, (obj) => {
+        const cid = obj.id ?? obj.conversation_id;
+        return (cid && typeof cid === 'string') ? cid : null;
+      });
       const tracker = options.tracker;
-      if (tracker && convId) {
-        tracker.record(convId, this.name, () => this.deleteConversation(convId));
-      }
-      return { stream: forClient, conversationId: convId };
+      idPromise.then((id) => {
+        if (tracker && id) tracker.record(id, this.name, () => this.deleteConversation(id));
+      });
+      return { stream, conversationId: '', _idPromise: idPromise };
     }
 
     const tracker = options.tracker;

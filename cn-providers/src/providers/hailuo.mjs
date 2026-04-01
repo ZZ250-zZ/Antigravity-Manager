@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
 
 const BASE_URL = 'https://hailuoai.com';
 
@@ -78,7 +79,8 @@ async function readConvIdFromStream(stream) {
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
+    reader.releaseLock();
   }
   return convId;
 }
@@ -147,15 +149,19 @@ export class HailuoProvider {
       throw new Error(`Hailuo chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    // tee 解析 conversation_id
-    const [forParse, forClient] = res.body.tee();
-    const conversationId = await readConvIdFromStream(forParse);
+    // 用 passthrough 提取 conversation_id，避免 tee()
+    const { stream, idPromise } = createIdExtractingPassthrough(res.body, (obj) => {
+      const cid = obj.chatID ?? obj.chat_id ?? obj.conversation_id ?? obj.id;
+      return (cid && typeof cid === 'string') ? cid : null;
+    });
 
     const tracker = options.tracker;
-    if (tracker && conversationId) {
-      tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
-    }
+    idPromise.then((conversationId) => {
+      if (tracker && conversationId) {
+        tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
+      }
+    });
 
-    return { stream: forClient, conversationId: conversationId || '' };
+    return { stream, conversationId: '', _idPromise: idPromise };
   }
 }

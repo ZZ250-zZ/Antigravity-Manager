@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
 
 const BASE_URL = 'https://yuanbao.tencent.com';
 
@@ -76,7 +77,8 @@ async function readChatIdFromStream(stream) {
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
+    reader.releaseLock();
   }
   return chatId;
 }
@@ -147,14 +149,19 @@ export class YuanbaoProvider {
       throw new Error(`Yuanbao chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    const [forParse, forClient] = res.body.tee();
-    const conversationId = await readChatIdFromStream(forParse);
+    // 用 passthrough 提取 chatId，避免 tee()
+    const { stream, idPromise } = createIdExtractingPassthrough(res.body, (obj) => {
+      const cid = obj.chatId ?? obj.chat_id ?? obj.id ?? obj.conversation_id;
+      return (cid && typeof cid === 'string') ? cid : null;
+    });
 
     const tracker = options.tracker;
-    if (tracker && conversationId) {
-      tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
-    }
+    idPromise.then((conversationId) => {
+      if (tracker && conversationId) {
+        tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
+      }
+    });
 
-    return { stream: forClient, conversationId: conversationId || '' };
+    return { stream, conversationId: '', _idPromise: idPromise };
   }
 }

@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
 
 const BIZ_BASE = 'https://qianwen.biz.aliyun.com';
 
@@ -117,7 +118,8 @@ async function readSessionIdFromSseStream(stream) {
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
+    reader.releaseLock();
   }
   return sessionId;
 }
@@ -204,16 +206,19 @@ export class QwenProvider {
       throw new Error(`Qwen chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    // tee：一路解析 sessionId，一路把完整 SSE 交给调用方（HTTP/2 由 wreq-js 处理）
-    const [forParse, forClient] = res.body.tee();
-    const conversationIdPromise = readSessionIdFromSseStream(forParse);
-    const conversationId = await conversationIdPromise;
+    // 用 passthrough 提取 sessionId，避免 tee()（wreq-js tee 在 Windows 上有兼容问题）
+    const { stream, idPromise } = createIdExtractingPassthrough(
+      res.body,
+      (obj) => (obj.sessionId && typeof obj.sessionId === 'string') ? obj.sessionId : null,
+    );
 
     const tracker = options.tracker;
-    if (tracker && conversationId) {
-      tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
-    }
+    idPromise.then((conversationId) => {
+      if (tracker && conversationId) {
+        tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
+      }
+    });
 
-    return { stream: forClient, conversationId };
+    return { stream, conversationId: '', _idPromise: idPromise };
   }
 }

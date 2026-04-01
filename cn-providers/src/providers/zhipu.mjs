@@ -4,6 +4,7 @@
 import { generateZhipuSign, uuid } from '../utils/sign.mjs';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
 
 const ZHIPU_REFRESH = 'https://chatglm.cn/chatglm/user-api/user/refresh';
 const ZHIPU_STREAM = 'https://chatglm.cn/chatglm/backend-api/assistant/stream';
@@ -127,7 +128,8 @@ async function readConversationIdFromZhipuStream(stream) {
       }
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
+    reader.releaseLock();
   }
   return convId;
 }
@@ -234,17 +236,20 @@ export class ZhipuProvider {
       throw new Error(`Zhipu chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    const [forParse, forClient] = res.body.tee();
-    const conversationIdPromise = readConversationIdFromZhipuStream(forParse);
-    const conversationId = await conversationIdPromise;
+    // 用 passthrough 提取 conversation_id，避免 tee()
+    const { stream, idPromise } = createIdExtractingPassthrough(res.body, (obj) =>
+      (obj.conversation_id && typeof obj.conversation_id === 'string') ? obj.conversation_id : null,
+    );
 
     const tracker = options.tracker;
-    if (tracker && conversationId) {
-      tracker.record(conversationId, this.name, () =>
-        this.deleteConversation(conversationId, assistantId),
-      );
-    }
+    idPromise.then((conversationId) => {
+      if (tracker && conversationId) {
+        tracker.record(conversationId, this.name, () =>
+          this.deleteConversation(conversationId, assistantId),
+        );
+      }
+    });
 
-    return { stream: forClient, conversationId };
+    return { stream, conversationId: '', _idPromise: idPromise };
   }
 }
