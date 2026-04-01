@@ -184,9 +184,15 @@ export function createOpenAIStreamTransformer(providerName, model) {
         }
         return null;
       }
+      case 'spark': {
+        // Spark SSE 数据是 base64 编码的文本（不是 JSON），在 transform 主循环中特殊处理
+        // 此分支仅作为兜底：如果意外进入了 JSON 解析路径
+        if (typeof parsed.content === 'string') return parsed.content;
+        if (typeof parsed.text === 'string') return parsed.text;
+        return null;
+      }
       case 'hailuo':
       case 'step':
-      case 'spark':
       case 'yuanbao': {
         // 通用 Web Provider: 尝试从 content / text / choices.delta.content 提取
         const oaiDelta = parsed.choices?.[0]?.delta?.content;
@@ -242,6 +248,34 @@ export function createOpenAIStreamTransformer(providerName, model) {
         }
         if (!payload) continue;
 
+        // Spark 特殊处理：SSE data 是 base64 编码的文本（不是 JSON）
+        if (providerName === 'spark') {
+          // <end> 为流结束标记
+          if (payload === '<end>') {
+            finished = true;
+            controller.enqueue(encodeChunk({}, 'stop'));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            return;
+          }
+          // 跳过 session ID 行（cht...@...<sid>）和插件推荐
+          if (payload.includes('<sid>') || payload.startsWith('```')) continue;
+          // base64 解码为文本
+          try {
+            const decoded = Buffer.from(payload, 'base64').toString('utf8');
+            // 跳过深度思考事件（<deep_x1>JSON），只保留正文文本
+            if (decoded && !decoded.startsWith('<deep_x1>')) {
+              if (!sentFirstRole) {
+                sentFirstRole = true;
+                controller.enqueue(encodeChunk({ role: 'assistant', content: '' }));
+              }
+              controller.enqueue(encodeChunk({ content: decoded }));
+            }
+          } catch {
+            // 非法 base64，跳过
+          }
+          continue;
+        }
+
         let parsed;
         try {
           parsed = JSON.parse(payload);
@@ -274,14 +308,24 @@ export function createOpenAIStreamTransformer(providerName, model) {
         if (line.startsWith('data:')) {
           const payload = line.slice(5).trimStart();
           if (payload && payload !== '[DONE]') {
-            try {
-              const parsed = JSON.parse(payload);
-              const delta = extractDelta(parsed);
-              if (delta) {
-                controller.enqueue(encodeChunk({ content: delta }));
+            // Spark: base64 解码残余数据，跳过深度思考
+            if (providerName === 'spark') {
+              if (payload !== '<end>' && !payload.includes('<sid>') && !payload.startsWith('```')) {
+                try {
+                  const decoded = Buffer.from(payload, 'base64').toString('utf8');
+                  if (decoded && !decoded.startsWith('<deep_x1>')) controller.enqueue(encodeChunk({ content: decoded }));
+                } catch { /* ignore */ }
               }
-            } catch {
-              // ignore
+            } else {
+              try {
+                const parsed = JSON.parse(payload);
+                const delta = extractDelta(parsed);
+                if (delta) {
+                  controller.enqueue(encodeChunk({ content: delta }));
+                }
+              } catch {
+                // ignore
+              }
             }
           }
         }
@@ -318,6 +362,20 @@ export async function collectNonStreamResponse(stream, providerName, model) {
       if (!line.startsWith('data:')) continue;
       const payload = line.slice(5).trimStart();
       if (payload === '[DONE]' || !payload) continue;
+
+      // Spark: base64 解码拼接文本，跳过深度思考事件
+      if (providerName === 'spark') {
+        if (payload === '<end>') break;
+        if (payload.includes('<sid>') || payload.startsWith('```')) continue;
+        try {
+          const decoded = Buffer.from(payload, 'base64').toString('utf8');
+          if (decoded && !decoded.startsWith('<deep_x1>')) {
+            fullContent += decoded;
+          }
+        } catch { /* ignore */ }
+        continue;
+      }
+
       try {
         const parsed = JSON.parse(payload);
         fullContent = extractFullContent(parsed, providerName, fullContent);
@@ -384,9 +442,15 @@ function extractFullContent(parsed, providerName, prev) {
       if (parsed.p && parsed.p !== 'response/content') return prev;
       return typeof parsed.v === 'string' ? prev + parsed.v : prev;
     }
+    case 'spark': {
+      // Spark base64 SSE 已在 collectNonStreamResponse 中直接解码拼接
+      // 此处作为兜底
+      if (typeof parsed.content === 'string') return parsed.content;
+      if (typeof parsed.text === 'string') return prev + parsed.text;
+      return prev;
+    }
     case 'hailuo':
     case 'step':
-    case 'spark':
     case 'metaso': {
       // 跳过元数据和错误事件
       if (parsed.type && ['conversation_init', 'user_message_init', 'response_message_init', 'error'].includes(parsed.type)) return prev;
