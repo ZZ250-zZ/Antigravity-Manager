@@ -77,10 +77,14 @@ export function createOpenAIStreamTransformer(providerName, model) {
         return null;
       }
       case 'zhipu': {
-        // parts[0].content 为累积全文
+        // parts[0].content 是数组 [{type:"text", text:"全文", tool_calls:{}}]
         const parts = parsed.parts;
         if (!Array.isArray(parts) || !parts.length) return null;
-        const full = typeof parts[0].content === 'string' ? parts[0].content : null;
+        const c = parts[0].content;
+        // content 可能是字符串（旧版）或数组（新版）
+        const full = typeof c === 'string' ? c
+          : (Array.isArray(c) && c[0]?.text) ? c[0].text
+          : null;
         if (full === null) return null;
         const delta = full.slice(prevContent.length);
         prevContent = full;
@@ -358,10 +362,12 @@ function extractFullContent(parsed, providerName, prev) {
       return prev;
     case 'zhipu': {
       const parts = parsed.parts;
-      if (Array.isArray(parts) && parts.length && typeof parts[0].content === 'string') {
-        return parts[0].content;
-      }
-      return prev;
+      if (!Array.isArray(parts) || !parts.length) return prev;
+      const c = parts[0].content;
+      const text = typeof c === 'string' ? c
+        : (Array.isArray(c) && c[0]?.text) ? c[0].text
+        : null;
+      return text ?? prev;
     }
     case 'doubao': {
       if (typeof parsed.event_data !== 'string') return prev;

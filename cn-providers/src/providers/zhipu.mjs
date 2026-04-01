@@ -1,13 +1,16 @@
 /**
- * 智谱清言（ChatGLM）Web API：chatglm_token 直接认证，SSE 流式。
+ * 智谱清言（ChatGLM）Web API：chatglm_token + X-Sign WAF 签名认证，SSE 流式。
  *
- * 认证: chatglm_token（从浏览器 Cookie 获取的 JWT）
- * 流程: 直接 POST stream API（自动创建会话）→ SSE 流式响应
+ * 认证: chatglm_token（JWT） + X-Sign（MD5 签名）
+ * 签名算法: MD5("{modifiedTimestamp}-{nonce}-{salt}")
+ *   - modifiedTimestamp: 将 Date.now() 的倒数第二位替换为 (数字和 - 原倒数第二位) % 10
+ *   - nonce: UUID v4 去横杠
+ *   - salt: 固定值 "8a1317a7468aa3ad86e997d08f3f31cb"
  *
  * SSE 响应格式 (每行 data:):
  *   { parts: [{ content: "全文", status: "..." }], conversation_id: "..." }
  */
-// import { generateZhipuSign, uuid } from '../utils/sign.mjs';
+import { createHash, randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
@@ -15,6 +18,29 @@ import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs'
 const ZHIPU_BASE = 'https://chatglm.cn';
 const ZHIPU_STREAM = `${ZHIPU_BASE}/chatglm/backend-api/assistant/stream`;
 const ZHIPU_DELETE = `${ZHIPU_BASE}/chatglm/backend-api/assistant/conversation/delete`;
+const SIGN_SALT = '8a1317a7468aa3ad86e997d08f3f31cb';
+
+/** 生成修改后的时间戳（倒数第二位替换为校验位） */
+function makeTimestamp() {
+  const raw = Date.now().toString();
+  const len = raw.length;
+  const digits = raw.split('').map(Number);
+  const checksum = digits.reduce((a, b) => a + b, 0) - digits[len - 2];
+  return raw.substring(0, len - 2) + (checksum % 10) + raw.substring(len - 1, len);
+}
+
+/** 生成 32 位 hex UUID（去横杠） */
+function hexUUID() {
+  return randomUUID().replace(/-/g, '');
+}
+
+/** 生成 X-Sign 签名三元组 */
+function generateSign() {
+  const timestamp = makeTimestamp();
+  const xNonce = hexUUID();
+  const sign = createHash('md5').update(`${timestamp}-${xNonce}-${SIGN_SALT}`).digest('hex');
+  return { timestamp, xNonce, sign };
+}
 
 /** 模型 → assistant_id */
 const ASSISTANT_MAP = {
@@ -67,17 +93,28 @@ export class ZhipuProvider {
   constructor(token) {
     /** @private */
     this._token = token;
+    /** @private 持久化 device-id，整个实例生命周期不变 */
+    this._deviceId = hexUUID();
   }
 
   get name() {
     return 'zhipu';
   }
 
-  /** @private 构建请求头（不再需要签名） */
+  /** @private 构建请求头（包含 X-Sign WAF 签名） */
   _headers(extra = {}) {
+    const { timestamp, xNonce, sign } = generateSign();
     return {
       Authorization: `Bearer ${this._token}`,
       'Content-Type': 'application/json',
+      'App-Name': 'chatglm',
+      'X-Device-Id': this._deviceId,
+      'X-App-Platform': 'pc',
+      'X-App-Version': '0.0.1',
+      'X-Request-Id': hexUUID(),
+      'X-Timestamp': timestamp,
+      'X-Nonce': xNonce,
+      'X-Sign': sign,
       Origin: ZHIPU_BASE,
       Referer: `${ZHIPU_BASE}/main/chatfree`,
       ...extra,
