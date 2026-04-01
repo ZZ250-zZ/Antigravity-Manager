@@ -59,11 +59,7 @@ const TOKEN_MAP = {
   spark: process.env.SPARK_TOKEN,
   metaso: process.env.METASO_TOKEN,
   yuanbao: process.env.YUANBAO_TOKEN,
-  // API Key 模式
-  baichuan: process.env.BAICHUAN_API_KEY,
-  yi: process.env.YI_API_KEY,
-  sensenova: process.env.SENSENOVA_API_KEY,
-  tiangong: process.env.TIANGONG_API_KEY,
+  // 官方 API 模式已移除，仅保留 Web 免费模式
 };
 
 // 每个 provider 对应一个代表性 model
@@ -78,10 +74,7 @@ const PROVIDER_MODELS = {
   spark: 'spark',
   metaso: 'metaso',
   yuanbao: 'yuanbao',
-  baichuan: 'baichuan',
-  yi: 'yi',
-  sensenova: 'sensenova',
-  tiangong: 'tiangong',
+  // 官方 API 模式已移除
 };
 
 async function waitForServer(maxRetries = 15) {
@@ -351,10 +344,9 @@ async function main() {
   if (providers.length === 0) {
     console.log('⚠ 没有配置真实 token 的 provider，跳过端到端测试。');
     console.log('  可设置环境变量：');
-    console.log('  Web 模式: QWEN_TOKEN, KIMI_TOKEN, ZHIPU_TOKEN, DOUBAO_TOKEN,');
-    console.log('           DEEPSEEK_TOKEN, HAILUO_TOKEN, STEP_TOKEN, SPARK_TOKEN,');
-    console.log('           METASO_TOKEN, YUANBAO_TOKEN');
-    console.log('  API 模式: BAICHUAN_API_KEY, YI_API_KEY, SENSENOVA_API_KEY, TIANGONG_API_KEY');
+    console.log('  QWEN_TOKEN, KIMI_TOKEN, ZHIPU_TOKEN, DOUBAO_TOKEN,');
+    console.log('  DEEPSEEK_TOKEN, HAILUO_TOKEN, STEP_TOKEN, SPARK_TOKEN,');
+    console.log('  METASO_TOKEN, YUANBAO_TOKEN');
     process.exit(infraFailed.length > 0 ? 1 : 0);
   }
 

@@ -177,11 +177,11 @@ app.listen(config.port, () => {
     SPARK_TOKEN: 'spark',
     METASO_TOKEN: 'metaso',
     YUANBAO_TOKEN: 'yuanbao',
-    // 官方 API 模式 (API Key)
-    BAICHUAN_API_KEY: 'baichuan',
-    YI_API_KEY: 'yi',
-    SENSENOVA_API_KEY: 'sensenova',
-    TIANGONG_API_KEY: 'tiangong',
+    // 官方 API 模式已移除，仅保留 Web 免费模式
+    // BAICHUAN_API_KEY: 'baichuan',
+    // YI_API_KEY: 'yi',
+    // SENSENOVA_API_KEY: 'sensenova',
+    // TIANGONG_API_KEY: 'tiangong',
   };
   for (const [envKey, providerName] of Object.entries(envTokens)) {
     const val = process.env[envKey];

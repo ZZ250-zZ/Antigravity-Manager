@@ -13,12 +13,12 @@ import { StepProvider } from './providers/step.mjs';
 import { SparkProvider } from './providers/spark.mjs';
 import { MetasoProvider } from './providers/metaso.mjs';
 import { YuanbaoProvider } from './providers/yuanbao.mjs';
-import {
-  BaichuanProvider,
-  YiProvider,
-  SenseNovaProvider,
-  TiangongProvider,
-} from './providers/openai-compatible.mjs';
+// import {
+//   BaichuanProvider,
+//   YiProvider,
+//   SenseNovaProvider,
+//   TiangongProvider,
+// } from './providers/openai-compatible.mjs';
 
 /**
  * model → provider 映射表
@@ -78,26 +78,8 @@ const MODEL_PROVIDER_MAP = {
   yuanbao: 'yuanbao',
   'yuanbao-deepseek': 'yuanbao',
   'yuanbao-hunyuan': 'yuanbao',
-  // 百川智能 (API Key)
-  baichuan: 'baichuan',
-  'baichuan-4': 'baichuan',
-  'baichuan-3': 'baichuan',
-  'baichuan-turbo': 'baichuan',
-  // 零一万物 Yi (API Key)
-  yi: 'yi',
-  'yi-lightning': 'yi',
-  'yi-large': 'yi',
-  'yi-medium': 'yi',
-  wanzhi: 'yi',
-  // 商汤 SenseNova (API Key)
-  sensenova: 'sensenova',
-  sensechat: 'sensenova',
-  'sensechat-5': 'sensenova',
-  shangtan: 'sensenova',
-  // 天工 Tiangong (API Key)
-  tiangong: 'tiangong',
-  skychat: 'tiangong',
-  'sky-chat': 'tiangong',
+  // 以下 4 个 API Key 模式已移除，仅保留 Web 模式 Provider
+  // baichuan / yi / sensenova / tiangong 需要 API Key 付费，不符合 Web 免费模式要求
 };
 
 /** Provider 构造函数映射 */
@@ -113,11 +95,11 @@ const PROVIDER_CONSTRUCTORS = {
   spark: SparkProvider,
   metaso: MetasoProvider,
   yuanbao: YuanbaoProvider,
-  // 官方 API 模式 (API Key)
-  baichuan: BaichuanProvider,
-  yi: YiProvider,
-  sensenova: SenseNovaProvider,
-  tiangong: TiangongProvider,
+  // 官方 API 模式已移除（仅保留 Web 免费模式）
+  // baichuan: BaichuanProvider,
+  // yi: YiProvider,
+  // sensenova: SenseNovaProvider,
+  // tiangong: TiangongProvider,
 };
 
 /**
