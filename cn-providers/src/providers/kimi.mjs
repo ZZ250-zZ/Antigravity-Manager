@@ -3,6 +3,7 @@
  */
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const KIMI_BASE = 'https://kimi.moonshot.cn';
 
@@ -192,3 +193,23 @@ export class KimiProvider {
     return { stream: res.body, conversationId: convId };
   }
 }
+
+// Kimi SSE：event=cmpl 时 text 为增量；event=all_done 时结束
+registerSSEProcessor('kimi', {
+  isRawPayload: false,
+
+  extractDelta(parsed, _state) {
+    if (parsed.event === 'all_done') return null;
+    if (parsed.event === 'cmpl' && typeof parsed.text === 'string') return parsed.text;
+    return null;
+  },
+
+  extractFullContent(parsed, prev) {
+    if (parsed.event === 'cmpl' && typeof parsed.text === 'string') return prev + parsed.text;
+    return prev;
+  },
+
+  isDone(parsed) {
+    return parsed.event === 'all_done';
+  },
+});

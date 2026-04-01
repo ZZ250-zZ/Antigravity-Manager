@@ -6,6 +6,7 @@ import { httpRequest } from '../http-client.mjs';
 import { uuid } from '../utils/sign.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const DOUBAO_ORIGIN = 'https://www.doubao.com';
 const COMPLETION_PATH = '/samantha/chat/completion';
@@ -271,3 +272,38 @@ export class DoubaoProvider {
     return { stream, conversationId: '', _idPromise: idPromise };
   }
 }
+
+// 豆包 SSE：event_data 为 JSON 字符串，全文模式需算 delta
+registerSSEProcessor('doubao', {
+  isRawPayload: false,
+
+  extractDelta(parsed, state) {
+    if (parsed.event_type === 2003 || parsed.event_type === 2005) return null;
+    if (typeof parsed.event_data !== 'string') return null;
+    try {
+      const ed = JSON.parse(parsed.event_data);
+      const text = ed?.message?.content?.text ?? ed?.content?.text ?? ed?.text ?? null;
+      if (typeof text !== 'string') return null;
+      const delta = text.slice(state.prevContent.length);
+      state.prevContent = text;
+      return delta || null;
+    } catch {
+      return null;
+    }
+  },
+
+  extractFullContent(parsed, prev) {
+    if (typeof parsed.event_data !== 'string') return prev;
+    try {
+      const ed = JSON.parse(parsed.event_data);
+      const text = ed?.message?.content?.text ?? ed?.content?.text ?? ed?.text;
+      return typeof text === 'string' ? text : prev;
+    } catch {
+      return prev;
+    }
+  },
+
+  isDone(parsed) {
+    return parsed.event_type === 2003;
+  },
+});

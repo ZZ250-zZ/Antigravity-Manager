@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 // import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs'; // 不再需要从流中提取 ID
 
 const BASE_URL = 'https://yuanbao.tencent.com';
@@ -213,3 +214,24 @@ export class YuanbaoProvider {
     return { stream: res.body, conversationId };
   }
 }
+
+// 元宝 SSE：data: {"type":"text","msg":"增量文本"}
+registerSSEProcessor('yuanbao', {
+  isRawPayload: false,
+
+  extractDelta(parsed, _state) {
+    if (parsed.type === 'text' && typeof parsed.msg === 'string') return parsed.msg;
+    if (typeof parsed.content === 'string') return parsed.content;
+    if (typeof parsed.text === 'string') return parsed.text;
+    return null;
+  },
+
+  extractFullContent(parsed, prev) {
+    if (parsed.type === 'text' && typeof parsed.msg === 'string') return prev + parsed.msg;
+    if (typeof parsed.content === 'string') return parsed.content;
+    if (typeof parsed.text === 'string') return prev + parsed.text;
+    return prev;
+  },
+
+  isDone: () => false,
+});

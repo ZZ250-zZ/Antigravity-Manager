@@ -13,6 +13,7 @@
 // import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const BASE_URL = 'https://xinghuo.xfyun.cn';
 
@@ -181,3 +182,40 @@ export class SparkProvider {
     return { stream: res.body, conversationId: chatListId };
   }
 }
+
+// SSE 处理逻辑注册：Spark 的 SSE data 是 base64 编码文本，不是 JSON
+registerSSEProcessor('spark', {
+  isRawPayload: true,
+
+  // base64 payload 直接解码为文本；返回 null 表示跳过
+  processRawPayload(payload, _state) {
+    if (payload === '<end>') return { done: true };
+    // 跳过 session ID 行和插件推荐
+    if (payload.includes('<sid>') || payload.startsWith('```')) return null;
+    try {
+      const decoded = Buffer.from(payload, 'base64').toString('utf8');
+      // 跳过深度思考事件
+      if (!decoded || decoded.startsWith('<deep_x1>')) return null;
+      return { content: decoded };
+    } catch {
+      return null;
+    }
+  },
+
+  // 兜底：如果意外走了 JSON 路径
+  extractDelta(parsed, _state) {
+    if (typeof parsed.content === 'string') return parsed.content;
+    if (typeof parsed.text === 'string') return parsed.text;
+    return null;
+  },
+
+  extractFullContent(parsed, prev) {
+    if (typeof parsed.content === 'string') return parsed.content;
+    if (typeof parsed.text === 'string') return prev + parsed.text;
+    return prev;
+  },
+
+  isDone(_parsed) {
+    return false;
+  },
+});

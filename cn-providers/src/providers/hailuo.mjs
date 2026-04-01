@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const BASE_URL = 'https://hailuoai.com';
 
@@ -165,3 +166,37 @@ export class HailuoProvider {
     return { stream, conversationId: '', _idPromise: idPromise };
   }
 }
+
+// Hailuo/Step 通用 Web SSE：尝试 choices.delta.content / content / text / answer
+function _webGenericExtractDelta(parsed, state) {
+  const oaiDelta = parsed.choices?.[0]?.delta?.content;
+  if (typeof oaiDelta === 'string') return oaiDelta;
+  if (typeof parsed.content === 'string') {
+    const delta = parsed.content.slice(state.prevContent.length);
+    state.prevContent = parsed.content;
+    return delta || null;
+  }
+  if (typeof parsed.text === 'string') return parsed.text;
+  if (typeof parsed.answer === 'string') {
+    const delta = parsed.answer.slice(state.prevContent.length);
+    state.prevContent = parsed.answer;
+    return delta || null;
+  }
+  return null;
+}
+
+function _webGenericExtractFull(parsed, prev) {
+  const delta = parsed.choices?.[0]?.delta?.content;
+  if (typeof delta === 'string') return prev + delta;
+  if (typeof parsed.content === 'string') return parsed.content;
+  if (typeof parsed.text === 'string') return prev + parsed.text;
+  if (typeof parsed.answer === 'string') return parsed.answer;
+  return prev;
+}
+
+registerSSEProcessor('hailuo', {
+  isRawPayload: false,
+  extractDelta: _webGenericExtractDelta,
+  extractFullContent: _webGenericExtractFull,
+  isDone: () => false,
+});

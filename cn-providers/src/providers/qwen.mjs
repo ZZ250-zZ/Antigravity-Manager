@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const BIZ_BASE = 'https://qianwen.biz.aliyun.com';
 
@@ -222,3 +223,36 @@ export class QwenProvider {
     return { stream, conversationId: '', _idPromise: idPromise };
   }
 }
+
+// Qwen SSE：content 为全文（非增量），需自行算 delta
+registerSSEProcessor('qwen', {
+  isRawPayload: false,
+
+  extractDelta(parsed, state) {
+    if (parsed.contentType === 'plugin') return null;
+    let full = null;
+    if (Array.isArray(parsed.contents) && parsed.contents.length > 0) {
+      const textContent = parsed.contents.find(c => c.contentType !== 'plugin');
+      if (textContent) full = typeof textContent.content === 'string' ? textContent.content : null;
+    } else if (typeof parsed.content === 'string') {
+      full = parsed.content;
+    }
+    if (full === null) return null;
+    const delta = full.slice(state.prevContent.length);
+    state.prevContent = full;
+    return delta || null;
+  },
+
+  extractFullContent(parsed, prev) {
+    if (parsed.contentType === 'plugin') return prev;
+    if (Array.isArray(parsed.contents) && parsed.contents.length > 0) {
+      const textContent = parsed.contents.find(c => c.contentType !== 'plugin');
+      return textContent && typeof textContent.content === 'string' ? textContent.content : prev;
+    }
+    return typeof parsed.content === 'string' ? parsed.content : prev;
+  },
+
+  isDone(_parsed) {
+    return false;
+  },
+});

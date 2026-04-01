@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { solveChallenge } from '../utils/deepseek-pow.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const BASE_URL = 'https://chat.deepseek.com/api/v0';
 
@@ -217,3 +218,23 @@ export class DeepSeekProvider {
     return { stream: res.body, conversationId: sessionId };
   }
 }
+
+// DeepSeek Web SSE：增量文本在 v 字段，路径标识事件类型
+registerSSEProcessor('deepseek', {
+  isRawPayload: false,
+
+  extractDelta(parsed, _state) {
+    if (parsed.p && parsed.p !== 'response/content') return null;
+    if (typeof parsed.v === 'string') return parsed.v;
+    return null;
+  },
+
+  extractFullContent(parsed, prev) {
+    if (parsed.p && parsed.p !== 'response/content') return prev;
+    return typeof parsed.v === 'string' ? prev + parsed.v : prev;
+  },
+
+  isDone(parsed) {
+    return parsed.p === 'response/status' && parsed.v === 'FINISHED';
+  },
+});

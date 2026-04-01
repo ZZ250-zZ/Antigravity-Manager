@@ -20,6 +20,7 @@
 
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const BASE_URL = 'https://www.stepfun.com';
 
@@ -253,3 +254,34 @@ export class StepProvider {
     return { stream: sseStream, conversationId: sessionId };
   }
 }
+
+// Step SSE：Connect 协议已在 connectStreamToSSE 中转为标准 SSE 格式
+// 提取逻辑同 hailuo 通用 web 格式
+registerSSEProcessor('step', {
+  isRawPayload: false,
+  extractDelta(parsed, state) {
+    const oaiDelta = parsed.choices?.[0]?.delta?.content;
+    if (typeof oaiDelta === 'string') return oaiDelta;
+    if (typeof parsed.content === 'string') {
+      const delta = parsed.content.slice(state.prevContent.length);
+      state.prevContent = parsed.content;
+      return delta || null;
+    }
+    if (typeof parsed.text === 'string') return parsed.text;
+    if (typeof parsed.answer === 'string') {
+      const delta = parsed.answer.slice(state.prevContent.length);
+      state.prevContent = parsed.answer;
+      return delta || null;
+    }
+    return null;
+  },
+  extractFullContent(parsed, prev) {
+    const delta = parsed.choices?.[0]?.delta?.content;
+    if (typeof delta === 'string') return prev + delta;
+    if (typeof parsed.content === 'string') return parsed.content;
+    if (typeof parsed.text === 'string') return prev + parsed.text;
+    if (typeof parsed.answer === 'string') return parsed.answer;
+    return prev;
+  },
+  isDone: () => false,
+});

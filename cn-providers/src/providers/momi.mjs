@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const BASE_URL = 'https://aistudio.xiaomimimo.com';
 
@@ -175,3 +176,45 @@ export class MomiProvider {
     return { stream, conversationId, _idPromise: idPromise };
   }
 }
+
+// MOMI SSE：event:message → data:{"type":"text","content":"增量文本"}
+// 包含 <think>...</think> 思考标签过滤逻辑
+registerSSEProcessor('momi', {
+  isRawPayload: false,
+
+  extractDelta(parsed, state) {
+    if (parsed.promptTokens !== undefined) return null;
+    if (parsed.content && !parsed.type && /^\d+$/.test(String(parsed.content))) return null;
+    if (parsed.type === 'text' && typeof parsed.content === 'string') {
+      let text = parsed.content;
+      // 移除完整的 thinking 标签对
+      text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+      if (text.includes('<think>')) {
+        state.prevContent = '<THINKING>';
+        return null;
+      }
+      if (state.prevContent === '<THINKING>') {
+        if (text.includes('</think>')) {
+          state.prevContent = '';
+          text = text.split('</think>').pop() ?? '';
+          return text || null;
+        }
+        return null;
+      }
+      return text || null;
+    }
+    return null;
+  },
+
+  extractFullContent(parsed, prev) {
+    if (parsed.type === 'text' && typeof parsed.content === 'string') {
+      let text = parsed.content;
+      text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+      if (text.includes('<think>') || text.includes('</think>')) return prev;
+      return prev + text;
+    }
+    return prev;
+  },
+
+  isDone: () => false,
+});

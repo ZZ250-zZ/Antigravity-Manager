@@ -14,6 +14,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const ZHIPU_BASE = 'https://chatglm.cn';
 const ZHIPU_STREAM = `${ZHIPU_BASE}/chatglm/backend-api/assistant/stream`;
@@ -194,3 +195,35 @@ export class ZhipuProvider {
     return { stream, conversationId: '', _idPromise: idPromise };
   }
 }
+
+// 智谱 SSE：parts[0].content 为全文，需算 delta
+registerSSEProcessor('zhipu', {
+  isRawPayload: false,
+
+  extractDelta(parsed, state) {
+    const parts = parsed.parts;
+    if (!Array.isArray(parts) || !parts.length) return null;
+    const c = parts[0].content;
+    const full = typeof c === 'string' ? c
+      : (Array.isArray(c) && c[0]?.text) ? c[0].text
+      : null;
+    if (full === null) return null;
+    const delta = full.slice(state.prevContent.length);
+    state.prevContent = full;
+    return delta || null;
+  },
+
+  extractFullContent(parsed, prev) {
+    const parts = parsed.parts;
+    if (!Array.isArray(parts) || !parts.length) return prev;
+    const c = parts[0].content;
+    const text = typeof c === 'string' ? c
+      : (Array.isArray(c) && c[0]?.text) ? c[0].text
+      : null;
+    return text ?? prev;
+  },
+
+  isDone(_parsed) {
+    return false;
+  },
+});

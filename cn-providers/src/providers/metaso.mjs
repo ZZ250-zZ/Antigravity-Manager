@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
+import { registerSSEProcessor } from '../converters/sse-registry.mjs';
 
 const BASE_URL = 'https://metaso.cn';
 
@@ -153,3 +154,46 @@ export class MetasoProvider {
     return { stream, conversationId: '', _idPromise: idPromise };
   }
 }
+
+// Metaso SSE：type 字段标识事件类型，多种内容字段格式
+registerSSEProcessor('metaso', {
+  isRawPayload: false,
+
+  extractDelta(parsed, state) {
+    // 跳过元数据事件
+    if (parsed.type && ['conversation_init', 'user_message_init', 'response_message_init', 'error'].includes(parsed.type)) {
+      if (parsed.type === 'error') console.log(`[metaso] SSE error: ${parsed.msg ?? JSON.stringify(parsed)}`);
+      return null;
+    }
+    if (parsed.data && typeof parsed.data.text === 'string') return parsed.data.text;
+    if (parsed.data && typeof parsed.data.content === 'string') {
+      const delta = parsed.data.content.slice(state.prevContent.length);
+      state.prevContent = parsed.data.content;
+      return delta || null;
+    }
+    if (typeof parsed.content === 'string') {
+      const delta = parsed.content.slice(state.prevContent.length);
+      state.prevContent = parsed.content;
+      return delta || null;
+    }
+    if (typeof parsed.text === 'string') return parsed.text;
+    if (typeof parsed.answer === 'string') {
+      const delta = parsed.answer.slice(state.prevContent.length);
+      state.prevContent = parsed.answer;
+      return delta || null;
+    }
+    return null;
+  },
+
+  extractFullContent(parsed, prev) {
+    if (parsed.type && ['conversation_init', 'user_message_init', 'response_message_init', 'error'].includes(parsed.type)) return prev;
+    if (parsed.data && typeof parsed.data.text === 'string') return prev + parsed.data.text;
+    if (parsed.data && typeof parsed.data.content === 'string') return parsed.data.content;
+    if (typeof parsed.content === 'string') return parsed.content;
+    if (typeof parsed.text === 'string') return prev + parsed.text;
+    if (typeof parsed.answer === 'string') return parsed.answer;
+    return prev;
+  },
+
+  isDone: () => false,
+});
