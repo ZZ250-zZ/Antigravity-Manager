@@ -230,6 +230,14 @@ registerSSEProcessor('qwen', {
   isRawPayload: false,
 
   extractDelta(parsed, state) {
+    // 检测服务端错误（如 NOT_LOGIN 表示会话失效）
+    if (parsed.errorCode && typeof parsed.errorCode === 'string' && parsed.errorCode !== '') {
+      if (!state._errorReported) {
+        state._errorReported = true;
+        return `[Qwen Error: ${parsed.errorCode}] 请重新登录并更新 token`;
+      }
+      return null;
+    }
     if (parsed.contentType === 'plugin') return null;
     let full = null;
     if (Array.isArray(parsed.contents) && parsed.contents.length > 0) {
@@ -245,6 +253,9 @@ registerSSEProcessor('qwen', {
   },
 
   extractFullContent(parsed, prev) {
+    if (parsed.errorCode && typeof parsed.errorCode === 'string' && parsed.errorCode !== '') {
+      return `[Qwen Error: ${parsed.errorCode}] 请重新登录并更新 token`;
+    }
     if (parsed.contentType === 'plugin') return prev;
     if (Array.isArray(parsed.contents) && parsed.contents.length > 0) {
       const textContent = parsed.contents.find(c => c.contentType !== 'plugin');

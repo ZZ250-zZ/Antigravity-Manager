@@ -194,6 +194,17 @@ app.listen(config.port, async () => {
     console.log(`  加载本地 token 失败: ${e.message}`);
   }
 
+  // OpenCode Zen 免费模型：无需 token，自动注册 + 动态获取模型列表
+  try {
+    router.addToken('opencode', 'free-no-auth');
+    await router.refreshDynamicModels();
+    // 定期刷新（30 分钟），与 opencode.mjs 内的缓存周期一致
+    setInterval(() => router.refreshDynamicModels(), 30 * 60 * 1000);
+    console.log(`  ✓ 自动注册 opencode（免费免认证，模型动态加载）`);
+  } catch (e) {
+    console.log(`  ✗ 注册 opencode 失败: ${e.message}`);
+  }
+
   // 如果环境变量中有预设的 token，自动注册（覆盖本地文件）
   const envTokens = {
     QWEN_TOKEN: 'qwen',

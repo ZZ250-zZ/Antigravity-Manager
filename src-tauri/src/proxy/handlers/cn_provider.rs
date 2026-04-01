@@ -37,6 +37,7 @@ const CN_MODEL_PREFIXES: &[&str] = &[
     "yuanbao",
     "momi",
     "mimo",
+    "oc-",  // OpenCode Zen 免费模型（oc-glm-4.7-free, oc-kimi-k2.5-free 等）
 ];
 
 /// 判断 model 名称是否属于 CN provider

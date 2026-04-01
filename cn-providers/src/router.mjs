@@ -14,6 +14,7 @@ import { SparkProvider } from './providers/spark.mjs';
 import { MetasoProvider } from './providers/metaso.mjs';
 import { YuanbaoProvider } from './providers/yuanbao.mjs';
 import { MomiProvider } from './providers/momi.mjs';
+import { OpenCodeProvider, getModelIds as getOpenCodeModelIds } from './providers/opencode.mjs';
 // import {
 //   BaichuanProvider,
 //   YiProvider,
@@ -87,6 +88,7 @@ const MODEL_PROVIDER_MAP = {
   'momi-lite': 'momi',
   'mimo-v2-pro': 'momi',
   'mimo-v2-lite': 'momi',
+  // OpenCode Zen 模型在运行时从 API 动态加载（见 ProviderRouter.refreshDynamicModels）
   // 以下 4 个 API Key 模式已移除，仅保留 Web 模式 Provider
   // baichuan / yi / sensenova / tiangong 需要 API Key 付费，不符合 Web 免费模式要求
 };
@@ -105,6 +107,7 @@ const PROVIDER_CONSTRUCTORS = {
   metaso: MetasoProvider,
   yuanbao: YuanbaoProvider,
   momi: MomiProvider,
+  opencode: OpenCodeProvider,
   // 官方 API 模式已移除（仅保留 Web 免费模式）
   // baichuan: BaichuanProvider,
   // yi: YiProvider,
@@ -163,7 +166,7 @@ export class ProviderRouter {
    */
   resolve(model) {
     const m = (model ?? '').trim().toLowerCase();
-    const providerName = MODEL_PROVIDER_MAP[m];
+    const providerName = this._resolveProvider(m);
     if (!providerName) return null;
 
     const pool = this.tokenPools.get(providerName);
@@ -178,10 +181,11 @@ export class ProviderRouter {
     return { provider, providerName, token };
   }
 
-  /** 列出所有已注册 token 的可用模型 */
+  /** 列出所有已注册 token 的可用模型（合并静态 + 动态） */
   listModels() {
     const models = [];
-    for (const [model, providerName] of Object.entries(MODEL_PROVIDER_MAP)) {
+    const allMappings = { ...MODEL_PROVIDER_MAP, ...(this._dynamicModels ?? {}) };
+    for (const [model, providerName] of Object.entries(allMappings)) {
       const pool = this.tokenPools.get(providerName);
       if (pool && pool.tokens.length > 0) {
         models.push({
@@ -193,6 +197,43 @@ export class ProviderRouter {
       }
     }
     return models;
+  }
+
+  /**
+   * 动态注册模型 → provider 映射（运行时扩展，不修改静态表）。
+   * @param {string} model 模型名（如 oc-glm-4.7）
+   * @param {string} providerName provider 名称
+   */
+  registerModel(model, providerName) {
+    const m = model.trim().toLowerCase();
+    if (!this._dynamicModels) this._dynamicModels = {};
+    this._dynamicModels[m] = providerName;
+  }
+
+  /**
+   * 从上游 API 刷新动态模型列表（当前仅 OpenCode）。
+   * 启动时及定时调用。
+   */
+  async refreshDynamicModels() {
+    try {
+      const ocIds = await getOpenCodeModelIds();
+      for (const id of ocIds) {
+        this.registerModel(id, 'opencode');
+      }
+      console.log(`[Router] 动态加载 ${ocIds.length} 个 OpenCode 模型`);
+    } catch (e) {
+      console.warn(`[Router] 动态模型加载失败: ${e.message}`);
+    }
+  }
+
+  /**
+   * 根据 model 名解析 provider（先查静态表，再查动态表）
+   * @private
+   * @param {string} model
+   * @returns {string | undefined}
+   */
+  _resolveProvider(model) {
+    return MODEL_PROVIDER_MAP[model] ?? this._dynamicModels?.[model];
   }
 
   /** 列出所有 provider 的 token 数量统计 */

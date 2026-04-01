@@ -21,13 +21,16 @@
 | **Step JWT 过期预检** | 04-01 | 解析 `Oasis-Token` JWT exp，提前 5min 标记过期 |
 | **HTTP 超时保护** | 04-01 | `httpRequest` 默认 30s 超时；SSE 请求 `timeoutMs:0` |
 | **Rust CN Provider 路由** | 04-01 | `cn_provider.rs` + `CnProviderConfig` + 模型列表合并 |
+| **OpenCode Zen 免费模型** | 04-01 | 免认证透传 `opencode.ai/zen/v1`；`oc-*` 前缀区分；429 重试；**关键：不发 Origin/Referer 头** |
+| **动态模型列表机制** | 04-01 | `getModels()` + `refreshDynamicModels()` + 30 分钟定时刷新；OpenCode 41 个模型 |
+| **Chat2API 适配层** | 04-01 | `vendor/chat2api/` 核心协议文件 + `sync-chat2api.mjs` 同步工具 |
+| **GitHub Action** | 04-01 | `sync-chat2api.yml` 定时同步 + 可选构建 |
 
 ### 待处理 📋
 
 | 任务 | 优先级 | 备注 |
 |------|--------|------|
 | 调研 Doubao a_bogus/msToken | 高 | 确认逆向复杂度后决定是否实现 |
-| Chat2API Git Submodule 集成 | 中 | axios-to-wreq 适配器 |
 | 逆向文档 + 通用抓取 SKILL | 低 | 通用抓取能力 |
 | Metaso 限流恢复后验证 | 低 | 429 限流中 |
 

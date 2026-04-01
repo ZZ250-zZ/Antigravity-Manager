@@ -58,6 +58,7 @@ Node.js Sidecar (端口 8046)
 - 同时需要支持**思考模式和非思考模式**（如 Spark 的 deep_x1、DeepSeek 的思考链）
 - CN Provider 的响应转换**必须全面覆盖**这些模式组合
 - 思考过程内容默认**不输出给最终用户**（过滤掉）
+- **关键原则：上游始终流式**：所有 Provider 对上游 Web API 必须始终发送流式请求（`stream: true` / `Accept: text/event-stream`），因为 Web Chat 天然就是流式的。非流式转换仅在 sidecar 侧完成（`collectNonStreamResponse` 收集完整流式数据后返回 JSON）。向上游发送非流式请求等于告知服务商正在逆向。
 
 ### 3.8 账号池策略
 - 需要控制单个账号的请求频率
@@ -119,6 +120,7 @@ Node.js Sidecar (端口 8046)
 | 秘塔搜索 | metaso | ⚠️ 限流 | Next.js RSC 迁移，429 限流 |
 | 海螺AI (MiniMax) | hailuo | ✅ 已完成 | Cookie 认证 |
 | 腾讯元宝 | yuanbao | ✅ 已完成 | Agent 架构重写 |
+| OpenCode Zen | opencode | ✅ 已完成 | 免费免认证，`oc-*` 前缀，动态 41 模型，OpenAI 直传 |
 
 ## 7. 文档维护要求
 

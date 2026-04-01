@@ -279,7 +279,18 @@ registerSSEProcessor('doubao', {
   isRawPayload: false,
 
   extractDelta(parsed, state) {
-    if (parsed.event_type === 2003 || parsed.event_type === 2005) return null;
+    if (parsed.event_type === 2003) return null;
+    // event_type 2005: 封禁/限流，提取错误信息返回给用户
+    if (parsed.event_type === 2005) {
+      if (!state._errorReported && typeof parsed.event_data === 'string') {
+        state._errorReported = true;
+        try {
+          const ed = JSON.parse(parsed.event_data);
+          return `[Doubao Error: ${ed.message || ed.code}] ${ed.error_detail?.message || '请稍后重试'}`;
+        } catch { /* ignore */ }
+      }
+      return null;
+    }
     if (typeof parsed.event_data !== 'string') return null;
     try {
       const ed = JSON.parse(parsed.event_data);
@@ -294,6 +305,12 @@ registerSSEProcessor('doubao', {
   },
 
   extractFullContent(parsed, prev) {
+    if (parsed.event_type === 2005 && typeof parsed.event_data === 'string') {
+      try {
+        const ed = JSON.parse(parsed.event_data);
+        return `[Doubao Error: ${ed.message || ed.code}] ${ed.error_detail?.message || '请稍后重试'}`;
+      } catch { /* ignore */ }
+    }
     if (typeof parsed.event_data !== 'string') return prev;
     try {
       const ed = JSON.parse(parsed.event_data);

@@ -1,0 +1,167 @@
+name: Sync Chat2API & Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_after_sync:
+        description: '同步后是否构建 Tauri 应用'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  # 每周一自动检查更新（仅同步，不构建）
+  schedule:
+    - cron: '0 8 * * 1'
+
+jobs:
+  sync-and-build:
+    permissions:
+      contents: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "windows-latest"
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: qwen
+
+      # ─── 1. 实时拉取 Chat2API 核心协议逻辑 ───
+      - name: Clone Chat2API (latest)
+        run: |
+          git clone --depth 1 https://github.com/xiaoY233/Chat2API.git _chat2api_upstream
+        shell: bash
+
+      - name: Copy core protocol files
+        run: |
+          # 清空旧文件，确保同步干净
+          rm -rf cn-providers/vendor/chat2api
+          mkdir -p cn-providers/vendor/chat2api/adapters
+          mkdir -p cn-providers/vendor/chat2api/builtin
+          mkdir -p cn-providers/vendor/chat2api/lib
+          mkdir -p cn-providers/vendor/chat2api/stream
+
+          # 协议适配器（各厂商的请求/响应转换逻辑）
+          cp _chat2api_upstream/src/main/proxy/adapters/*.ts \
+            cn-providers/vendor/chat2api/adapters/ 2>/dev/null || true
+
+          # 内置 Provider 配置（端点、模型映射、认证方式）
+          cp _chat2api_upstream/src/main/providers/builtin/*.ts \
+            cn-providers/vendor/chat2api/builtin/ 2>/dev/null || true
+
+          # 通用 SSE 流处理
+          cp _chat2api_upstream/src/main/proxy/stream.ts \
+            cn-providers/vendor/chat2api/stream/ 2>/dev/null || true
+
+          # 工具库（如 DeepSeek PoW challenge）
+          if [ -d "_chat2api_upstream/src/main/lib/challenge" ]; then
+            cp -r _chat2api_upstream/src/main/lib/challenge \
+              cn-providers/vendor/chat2api/lib/ 2>/dev/null || true
+          fi
+
+          # 类型定义
+          cp _chat2api_upstream/src/main/store/types.ts \
+            cn-providers/vendor/chat2api/ 2>/dev/null || true
+          cp _chat2api_upstream/src/shared/types.ts \
+            cn-providers/vendor/chat2api/shared-types.ts 2>/dev/null || true
+
+          # 记录来源版本
+          cd _chat2api_upstream
+          echo "source: https://github.com/xiaoY233/Chat2API" > ../cn-providers/vendor/chat2api/VERSION
+          echo "commit: $(git rev-parse HEAD)" >> ../cn-providers/vendor/chat2api/VERSION
+          echo "date: $(git log -1 --format=%ci)" >> ../cn-providers/vendor/chat2api/VERSION
+          echo "synced: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> ../cn-providers/vendor/chat2api/VERSION
+          cd ..
+
+          echo "✅ Chat2API 核心协议文件已同步"
+          find cn-providers/vendor/chat2api -type f | wc -l
+        shell: bash
+
+      - name: Cleanup upstream clone
+        run: rm -rf _chat2api_upstream
+        shell: bash
+
+      # ─── 2. Node.js 环境 + 依赖 ───
+      - name: Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Run sync script (generate reference JSON)
+        run: node cn-providers/scripts/sync-chat2api.mjs
+
+      - name: Install cn-providers dependencies
+        working-directory: cn-providers
+        run: npm install
+
+      # ─── 3. 构建 Tauri 应用（可选） ───
+      - name: Rust setup
+        if: inputs.build_after_sync == 'true' || inputs.build_after_sync == ''
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Disable updater for test build
+        if: (inputs.build_after_sync == 'true' || inputs.build_after_sync == '') && matrix.platform == 'windows-latest'
+        run: |
+          $content = Get-Content src-tauri/tauri.conf.json -Raw
+          $content = $content -replace '"createUpdaterArtifacts": true', '"createUpdaterArtifacts": false'
+          Set-Content src-tauri/tauri.conf.json -Value $content
+        shell: powershell
+
+      - name: Build the app (unsigned)
+        if: inputs.build_after_sync == 'true' || inputs.build_after_sync == ''
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Upload Build Artifacts
+        if: inputs.build_after_sync == 'true' || inputs.build_after_sync == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-build-${{ matrix.platform }}-${{ strategy.job-index }}
+          path: |
+            src-tauri/target/**/release/bundle/nsis/*.exe
+            src-tauri/target/**/release/bundle/msi/*.msi
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ─── 4. 仅定时同步时：自动提交变更 ───
+      - name: Check for changes (schedule only)
+        if: github.event_name == 'schedule'
+        id: check_changes
+        run: |
+          git add cn-providers/vendor/ cn-providers/chat2api-reference.json
+          if git diff --cached --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Create PR with updates (schedule only)
+        if: github.event_name == 'schedule' && steps.check_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="auto/sync-chat2api-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git commit -m "chore(cn-providers): sync Chat2API protocol reference"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "chore: Sync Chat2API protocol reference $(date +%Y-%m-%d)" \
+            --body "Automated sync from xiaoY233/Chat2API upstream." \
+            --base qwen
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
