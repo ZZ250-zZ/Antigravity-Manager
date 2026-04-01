@@ -1,36 +1,35 @@
 /**
- * 智谱清言（ChatGLM）Web API：chatglm_refresh_token + X-Sign 刷新 access，SSE 流式。
+ * 智谱清言（ChatGLM）Web API：chatglm_token 直接认证，SSE 流式。
+ *
+ * 认证: chatglm_token（从浏览器 Cookie 获取的 JWT）
+ * 流程: 直接 POST stream API（自动创建会话）→ SSE 流式响应
+ *
+ * SSE 响应格式 (每行 data:):
+ *   { parts: [{ content: "全文", status: "..." }], conversation_id: "..." }
  */
-import { generateZhipuSign, uuid } from '../utils/sign.mjs';
+// import { generateZhipuSign, uuid } from '../utils/sign.mjs';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
 
-const ZHIPU_REFRESH = 'https://chatglm.cn/chatglm/user-api/user/refresh';
-const ZHIPU_STREAM = 'https://chatglm.cn/chatglm/backend-api/assistant/stream';
-const ZHIPU_DELETE = 'https://chatglm.cn/chatglm/backend-api/assistant/conversation/delete';
+const ZHIPU_BASE = 'https://chatglm.cn';
+const ZHIPU_STREAM = `${ZHIPU_BASE}/chatglm/backend-api/assistant/stream`;
+const ZHIPU_DELETE = `${ZHIPU_BASE}/chatglm/backend-api/assistant/conversation/delete`;
 
 /** 模型 → assistant_id */
 const ASSISTANT_MAP = {
   'glm-4': '65940acff94777010aa6b796',
   chatglm: '65940acff94777010aa6b796',
+  zhipu: '65940acff94777010aa6b796',
   'glm-4-zero': '676411c38945bbc58a905d31',
   'glm-zero': '676411c38945bbc58a905d31',
 };
 
-/**
- * @param {string | undefined} model
- * @returns {string}
- */
 function mapAssistantId(model) {
   const m = (model ?? '').trim().toLowerCase();
   return ASSISTANT_MAP[m] ?? '65940acff94777010aa6b796';
 }
 
-/**
- * @param {unknown} content
- * @returns {string}
- */
 function normalizeMessageContent(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -46,20 +45,13 @@ function normalizeMessageContent(content) {
   return String(content ?? '');
 }
 
-/**
- * OpenAI → 智谱 messages（content 为 [{ type, text }]）
- * @param {Array<{ role: string; content?: unknown }>} messages
- */
+/** OpenAI → 智谱 messages（content 为 [{ type, text }]） */
 function messagesToZhipu(messages) {
-  /** @type {Array<{ role: string; content: Array<{ type: string; text: string }> }>} */
   const out = [];
   for (const msg of messages) {
     const text = normalizeMessageContent(msg.content);
     if (msg.role === 'system') {
-      out.push({
-        role: 'user',
-        content: [{ type: 'text', text: `[System]\n${text}` }],
-      });
+      out.push({ role: 'user', content: [{ type: 'text', text: `[System]\n${text}` }] });
       continue;
     }
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
@@ -68,75 +60,9 @@ function messagesToZhipu(messages) {
   return out;
 }
 
-/**
- * 智谱鉴权头：每次请求重新算 X-Sign
- * @param {string} accessToken
- * @param {{ acceptSse?: boolean }} [extra]
- */
-function buildZhipuHeaders(accessToken, extra = {}) {
-  const { sign, nonce, ts } = generateZhipuSign();
-  /** @type {Record<string, string>} */
-  const h = {
-    Authorization: `Bearer ${accessToken}`,
-    'Content-Type': 'application/json',
-    'X-Sign': sign,
-    'X-Nonce': nonce,
-    'X-Timestamp': ts,
-    'App-Name': 'chatglm',
-    'X-App-Platform': 'pc',
-    'X-App-Version': '0.0.1',
-    'X-App-Fr': 'default',
-    'X-Lang': 'zh',
-    'X-Device-Id': uuid(),
-    'X-Request-Id': uuid(),
-  };
-  if (extra.acceptSse) h.Accept = 'text/event-stream';
-  return h;
-}
-
-/**
- * 从 SSE 流中提取首个 conversation_id（与 Qwen 的 tee 用法一致）
- * @param {ReadableStream<Uint8Array>} stream
- * @returns {Promise<string>}
- */
-async function readConversationIdFromZhipuStream(stream) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let convId = '';
-  try {
-    while (!convId) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.replace(/\r$/, '').trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const payload = trimmed.slice(5).trimStart();
-        if (payload === '[DONE]' || !payload) continue;
-        try {
-          const obj = JSON.parse(payload);
-          if (obj.conversation_id && typeof obj.conversation_id === 'string') {
-            convId = obj.conversation_id;
-            break;
-          }
-        } catch {
-          // ignore
-        }
-      }
-    }
-  } finally {
-    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
-    reader.releaseLock();
-  }
-  return convId;
-}
-
 export class ZhipuProvider {
   /**
-   * @param {string} token chatglm_refresh_token
+   * @param {string} token chatglm_token（JWT access token）
    */
   constructor(token) {
     /** @private */
@@ -147,43 +73,26 @@ export class ZhipuProvider {
     return 'zhipu';
   }
 
-  /**
-   * @param {string} [refreshTokenArg]
-   * @returns {Promise<{ accessToken: string; expiresIn?: number }>}
-   */
-  async refreshToken(refreshTokenArg) {
-    const rt = refreshTokenArg ?? this._token;
-    const res = await httpRequest(ZHIPU_REFRESH, {
-      method: 'POST',
-      headers: buildZhipuHeaders(rt),
-      body: '{}',
-    });
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      throw new Error(`Zhipu refreshToken failed: ${res.status} ${errText.slice(0, 200)}`);
-    }
-    const data = await res.json();
-    const result = data.result;
-    const accessToken =
-      result && typeof result === 'object'
-        ? result.accessToken ?? result.access_token
-        : undefined;
-    if (!accessToken || typeof accessToken !== 'string') {
-      throw new Error('Zhipu refreshToken: missing access token in response');
-    }
-    return { accessToken, expiresIn: 3600 };
+  /** @private 构建请求头（不再需要签名） */
+  _headers(extra = {}) {
+    return {
+      Authorization: `Bearer ${this._token}`,
+      'Content-Type': 'application/json',
+      Origin: ZHIPU_BASE,
+      Referer: `${ZHIPU_BASE}/main/chatfree`,
+      ...extra,
+    };
   }
 
   /**
    * @param {string} conversationId
-   * @param {string} [assistantId] 须与创建会话时一致（如 glm-zero）；默认 glm-4
+   * @param {string} [assistantId]
    */
   async deleteConversation(conversationId, assistantId) {
-    const { accessToken } = await this.refreshToken();
     const aid = assistantId ?? mapAssistantId(undefined);
     const res = await httpRequest(ZHIPU_DELETE, {
       method: 'POST',
-      headers: buildZhipuHeaders(accessToken),
+      headers: this._headers(),
       body: JSON.stringify({
         assistant_id: aid,
         conversation_id: conversationId,
@@ -191,7 +100,7 @@ export class ZhipuProvider {
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      throw new Error(`Zhipu deleteConversation failed: ${res.status} ${errText.slice(0, 200)}`);
+      console.warn(`Zhipu deleteConversation: ${res.status} ${errText.slice(0, 200)}`);
     }
   }
 
@@ -201,8 +110,7 @@ export class ZhipuProvider {
    * @returns {Promise<{ stream: ReadableStream<Uint8Array>; conversationId: string }>}
    */
   async chatCompletion(messages, options = {}) {
-    const rt = options.token ?? this._token;
-    const { accessToken } = await this.refreshToken(rt);
+    if (options.token) this._token = options.token;
     const assistantId = mapAssistantId(options.model);
     const zhipuMessages = messagesToZhipu(messages);
 
@@ -214,20 +122,16 @@ export class ZhipuProvider {
       messages: zhipuMessages,
       meta_data: {
         cogview: { rm_label_watermark: false },
-        channel: '',
-        draft_id: '',
-        chat_mode: 'zero',
         is_networking: false,
         input_question_type: 'xxxx',
         is_test: false,
         platform: 'pc',
-        quote_log_id: '',
       },
     };
 
     const res = await httpRequest(ZHIPU_STREAM, {
       method: 'POST',
-      headers: buildZhipuHeaders(accessToken, { acceptSse: true }),
+      headers: this._headers({ Accept: 'text/event-stream' }),
       body: JSON.stringify(body),
     });
 
@@ -236,7 +140,7 @@ export class ZhipuProvider {
       throw new Error(`Zhipu chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    // 用 passthrough 提取 conversation_id，避免 tee()
+    // 从 SSE 流中提取 conversation_id
     const { stream, idPromise } = createIdExtractingPassthrough(res.body, (obj) =>
       (obj.conversation_id && typeof obj.conversation_id === 'string') ? obj.conversation_id : null,
     );

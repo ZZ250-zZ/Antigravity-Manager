@@ -44,12 +44,22 @@ export function createOpenAIStreamTransformer(providerName, model) {
 
   /** 提取各 Provider 的增量文本；返回 null 表示该行不含有效内容 */
   function extractDelta(parsed) {
+    // 临时调试：输出原始解析数据（修复后移除）
+    if (['doubao', 'deepseek', 'metaso', 'step', 'spark', 'yuanbao', 'momi'].includes(providerName)) {
+      console.log(`[DEBUG extractDelta][${providerName}] keys=${Object.keys(parsed).join(',')}, snippet=${JSON.stringify(parsed).slice(0, 250)}`);
+    }
     switch (providerName) {
       case 'qwen': {
+        // 跳过 plugin 类型事件（搜索结果等元数据，不是正文内容）
+        if (parsed.contentType === 'plugin') return null;
         // Qwen 新版 API：文本在 contents[0].content（数组），旧版在 content（字符串）
         let full = null;
         if (Array.isArray(parsed.contents) && parsed.contents.length > 0) {
-          full = typeof parsed.contents[0].content === 'string' ? parsed.contents[0].content : null;
+          // 只提取 text 类型的 content，跳过 plugin 类型
+          const textContent = parsed.contents.find(c => c.contentType !== 'plugin');
+          if (textContent) {
+            full = typeof textContent.content === 'string' ? textContent.content : null;
+          }
         } else if (typeof parsed.content === 'string') {
           full = parsed.content;
         }
@@ -100,31 +110,89 @@ export function createOpenAIStreamTransformer(providerName, model) {
         }
       }
       case 'deepseek': {
-        // DeepSeek SSE: choices[0].delta.content 为增量
-        const delta = parsed.choices?.[0]?.delta;
-        if (delta && typeof delta.content === 'string') {
-          return delta.content;
+        // DeepSeek Web SSE 格式：
+        //   {"p":"response/content","o":"APPEND","v":"text"} — 带路径的增量
+        //   {"v":"text"} — 简化增量（路径省略，隐含 response/content APPEND）
+        //   {"p":"response/status","v":"FINISHED"} — 结束标志，不含文本
+        //   {"p":"response/accumulated_token_usage",...} — token 统计，跳过
+        if (parsed.p && parsed.p !== 'response/content') return null;
+        if (typeof parsed.v === 'string') return parsed.v;
+        return null;
+      }
+      case 'metaso': {
+        // Metaso 新版 SSE：type 字段标识事件类型
+        // 跳过元数据事件（conversation_init / user_message_init / response_message_init）
+        if (parsed.type && ['conversation_init', 'user_message_init', 'response_message_init', 'error'].includes(parsed.type)) {
+          // 如果是 error 事件，打印日志但不返回内容
+          if (parsed.type === 'error') {
+            console.log(`[metaso] SSE error: ${parsed.msg ?? JSON.stringify(parsed)}`);
+          }
+          return null;
+        }
+        // 尝试从 data.text / data.content 提取内容
+        if (parsed.data && typeof parsed.data.text === 'string') return parsed.data.text;
+        if (parsed.data && typeof parsed.data.content === 'string') {
+          const delta = parsed.data.content.slice(prevContent.length);
+          prevContent = parsed.data.content;
+          return delta || null;
+        }
+        // 兜底：直接检查 content / text / answer 字段
+        if (typeof parsed.content === 'string') {
+          const delta = parsed.content.slice(prevContent.length);
+          prevContent = parsed.content;
+          return delta || null;
+        }
+        if (typeof parsed.text === 'string') return parsed.text;
+        if (typeof parsed.answer === 'string') {
+          const delta = parsed.answer.slice(prevContent.length);
+          prevContent = parsed.answer;
+          return delta || null;
+        }
+        return null;
+      }
+      case 'momi': {
+        // MOMI SSE: event:message → data:{"type":"text","content":"增量文本"}
+        // 跳过 dialogId 事件（content 为纯数字 ID）和 usage 事件
+        if (parsed.promptTokens !== undefined) return null;
+        if (parsed.content && !parsed.type && /^\d+$/.test(String(parsed.content))) return null;
+        // message 事件：type=text, content 为增量文本
+        if (parsed.type === 'text' && typeof parsed.content === 'string') {
+          // 过滤 <think>...</think> 思考标签内容
+          let text = parsed.content;
+          // 处理 thinking 标签：移除 <think> 到 </think> 之间的内容
+          text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+          // 如果当前 chunk 只有 <think> 开头（后续 chunk 会有 </think>），跳过
+          if (text.includes('<think>')) {
+            // 记录进入 thinking 模式
+            prevContent = '<THINKING>';
+            return null;
+          }
+          if (prevContent === '<THINKING>') {
+            // 在 thinking 模式中，等待 </think>
+            if (text.includes('</think>')) {
+              prevContent = '';
+              text = text.split('</think>').pop() ?? '';
+              return text || null;
+            }
+            return null;
+          }
+          return text || null;
         }
         return null;
       }
       case 'hailuo':
       case 'step':
       case 'spark':
-      case 'metaso':
       case 'yuanbao': {
         // 通用 Web Provider: 尝试从 content / text / choices.delta.content 提取
-        // 优先检查 OpenAI 格式 (choices.delta.content)
         const oaiDelta = parsed.choices?.[0]?.delta?.content;
         if (typeof oaiDelta === 'string') return oaiDelta;
-        // 尝试 content 字段 (累积全文)
         if (typeof parsed.content === 'string') {
           const delta = parsed.content.slice(prevContent.length);
           prevContent = parsed.content;
           return delta || null;
         }
-        // 尝试 text 字段 (增量)
         if (typeof parsed.text === 'string') return parsed.text;
-        // 尝试 answer 字段 (秘塔等搜索型)
         if (typeof parsed.answer === 'string') {
           const delta = parsed.answer.slice(prevContent.length);
           prevContent = parsed.answer;
@@ -141,15 +209,20 @@ export function createOpenAIStreamTransformer(providerName, model) {
   function isDone(parsed) {
     if (providerName === 'kimi' && parsed.event === 'all_done') return true;
     if (providerName === 'doubao' && parsed.event_type === 2003) return true;
-    // DeepSeek: finish_reason=stop
-    if (providerName === 'deepseek' && parsed.choices?.[0]?.finish_reason === 'stop') return true;
+    // DeepSeek Web: {"p":"response/status","v":"FINISHED"}
+    if (providerName === 'deepseek' && parsed.p === 'response/status' && parsed.v === 'FINISHED') return true;
     return false;
   }
 
   return new TransformStream({
     transform(chunk, controller) {
       if (finished) return;
-      sseBuffer += decoder.decode(chunk, { stream: true });
+      const rawText = decoder.decode(chunk, { stream: true });
+      // 临时调试：查看原始 chunk 数据（修复后移除）
+      if (['doubao', 'deepseek', 'metaso', 'step', 'spark', 'yuanbao', 'momi'].includes(providerName)) {
+        console.log(`[DEBUG chunk][${providerName}] len=${rawText.length}, data=${rawText.slice(0, 300)}`);
+      }
+      sseBuffer += rawText;
       const lines = sseBuffer.split('\n');
       sseBuffer = lines.pop() ?? '';
 
@@ -268,9 +341,12 @@ export async function collectNonStreamResponse(stream, providerName, model) {
 function extractFullContent(parsed, providerName, prev) {
   switch (providerName) {
     case 'qwen': {
-      // 新版：contents[0].content；旧版：content
+      // 跳过 plugin 类型事件
+      if (parsed.contentType === 'plugin') return prev;
+      // 新版：contents[0].content（取 text 类型）；旧版：content
       if (Array.isArray(parsed.contents) && parsed.contents.length > 0) {
-        return typeof parsed.contents[0].content === 'string' ? parsed.contents[0].content : prev;
+        const textContent = parsed.contents.find(c => c.contentType !== 'plugin');
+        return textContent && typeof textContent.content === 'string' ? textContent.content : prev;
       }
       return typeof parsed.content === 'string' ? parsed.content : prev;
     }
@@ -298,22 +374,40 @@ function extractFullContent(parsed, providerName, prev) {
       }
     }
     case 'deepseek': {
-      const delta = parsed.choices?.[0]?.delta?.content;
-      return typeof delta === 'string' ? prev + delta : prev;
+      // Web SSE：v 字段是增量文本，拼接到 prev
+      if (parsed.p && parsed.p !== 'response/content') return prev;
+      return typeof parsed.v === 'string' ? prev + parsed.v : prev;
     }
     case 'hailuo':
     case 'step':
     case 'spark':
-    case 'metaso':
+    case 'metaso': {
+      // 跳过元数据和错误事件
+      if (parsed.type && ['conversation_init', 'user_message_init', 'response_message_init', 'error'].includes(parsed.type)) return prev;
+      // 从 data 字段提取
+      if (parsed.data && typeof parsed.data.text === 'string') return prev + parsed.data.text;
+      if (parsed.data && typeof parsed.data.content === 'string') return parsed.data.content;
+      // 兜底
+      if (typeof parsed.content === 'string') return parsed.content;
+      if (typeof parsed.text === 'string') return prev + parsed.text;
+      if (typeof parsed.answer === 'string') return parsed.answer;
+      return prev;
+    }
+    case 'momi': {
+      // MOMI: type=text 的 message 事件，增量拼接
+      if (parsed.type === 'text' && typeof parsed.content === 'string') {
+        let text = parsed.content;
+        text = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+        if (text.includes('<think>') || text.includes('</think>')) return prev;
+        return prev + text;
+      }
+      return prev;
+    }
     case 'yuanbao': {
-      // 尝试 OpenAI 格式
       const oaiDelta = parsed.choices?.[0]?.delta?.content;
       if (typeof oaiDelta === 'string') return prev + oaiDelta;
-      // 累积全文
       if (typeof parsed.content === 'string') return parsed.content;
-      // 增量
       if (typeof parsed.text === 'string') return prev + parsed.text;
-      // 搜索型
       if (typeof parsed.answer === 'string') return parsed.answer;
       return prev;
     }

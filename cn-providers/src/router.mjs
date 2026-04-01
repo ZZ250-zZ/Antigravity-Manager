@@ -13,6 +13,7 @@ import { StepProvider } from './providers/step.mjs';
 import { SparkProvider } from './providers/spark.mjs';
 import { MetasoProvider } from './providers/metaso.mjs';
 import { YuanbaoProvider } from './providers/yuanbao.mjs';
+import { MomiProvider } from './providers/momi.mjs';
 // import {
 //   BaichuanProvider,
 //   YiProvider,
@@ -78,6 +79,12 @@ const MODEL_PROVIDER_MAP = {
   yuanbao: 'yuanbao',
   'yuanbao-deepseek': 'yuanbao',
   'yuanbao-hunyuan': 'yuanbao',
+  // 小米 MOMI
+  momi: 'momi',
+  'momi-pro': 'momi',
+  'momi-lite': 'momi',
+  'mimo-v2-pro': 'momi',
+  'mimo-v2-lite': 'momi',
   // 以下 4 个 API Key 模式已移除，仅保留 Web 模式 Provider
   // baichuan / yi / sensenova / tiangong 需要 API Key 付费，不符合 Web 免费模式要求
 };
@@ -95,6 +102,7 @@ const PROVIDER_CONSTRUCTORS = {
   spark: SparkProvider,
   metaso: MetasoProvider,
   yuanbao: YuanbaoProvider,
+  momi: MomiProvider,
   // 官方 API 模式已移除（仅保留 Web 免费模式）
   // baichuan: BaichuanProvider,
   // yi: YiProvider,

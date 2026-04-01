@@ -53,11 +53,13 @@ function messagesToKimi(messages) {
 
 export class KimiProvider {
   /**
-   * @param {string} token refresh_token
+   * @param {string} token refresh_token 或 access_token（kimi-auth cookie）
    */
   constructor(token) {
     /** @private */
     this._token = token;
+    /** @private 缓存的 access_token */
+    this._accessToken = null;
   }
 
   get name() {
@@ -65,19 +67,37 @@ export class KimiProvider {
   }
 
   /**
-   * 用 refresh_token 换取 access_token（服务端可能轮换 refresh_token）
-   * @param {string} [refreshTokenArg]
+   * 获取可用的 access_token：
+   * 1. 先尝试直接用 _token 作为 access_token 调用 /api/user 验证
+   * 2. 验证失败则当作 refresh_token 去 refresh 接口换取
+   * @param {string} [tokenArg]
    * @returns {Promise<{ accessToken: string; expiresIn?: number }>}
    */
-  async refreshToken(refreshTokenArg) {
-    const rt = refreshTokenArg ?? this._token;
+  async refreshToken(tokenArg) {
+    const token = tokenArg ?? this._token;
+    
+    // 如果已缓存 access_token，直接返回
+    if (this._accessToken) {
+      return { accessToken: this._accessToken, expiresIn: 3600 };
+    }
+    
+    // 先尝试直接作为 access_token 使用（验证是否有效）
+    try {
+      const verifyRes = await httpRequest(`${KIMI_BASE}/api/user`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (verifyRes.ok) {
+        // token 本身就是有效的 access_token
+        this._accessToken = token;
+        return { accessToken: token, expiresIn: 3600 };
+      }
+    } catch { /* 验证失败，继续 refresh 流程 */ }
+
+    // 作为 refresh_token 使用，换取 access_token
     const res = await httpRequest(`${KIMI_BASE}/api/auth/token/refresh`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${rt}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ refresh_token: rt }),
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
@@ -87,6 +107,7 @@ export class KimiProvider {
     if (data.refresh_token && typeof data.refresh_token === 'string') {
       this._token = data.refresh_token;
     }
+    this._accessToken = data.access_token;
     return {
       accessToken: data.access_token,
       expiresIn: typeof data.expires_in === 'number' ? data.expires_in : 3600,

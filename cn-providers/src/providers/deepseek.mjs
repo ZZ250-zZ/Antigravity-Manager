@@ -129,21 +129,27 @@ export class DeepSeekProvider {
       throw new Error(`DeepSeek PoW challenge failed: ${res.status} ${text.slice(0, 200)}`);
     }
     const data = await res.json();
-    const challenge = data?.data?.biz_data ?? data?.data;
+    const rawChallenge = data?.data?.biz_data ?? data?.data;
+    // biz_data 可能是 { challenge: { algorithm, challenge, salt, ... } } 嵌套结构
+    const challenge = rawChallenge?.challenge && typeof rawChallenge.challenge === 'object'
+      ? rawChallenge.challenge
+      : rawChallenge;
     if (!challenge || !challenge.challenge) {
       throw new Error('DeepSeek PoW: invalid challenge response');
     }
-    return solveChallenge(challenge);
+    // solveChallenge 是异步的（加载 WASM）
+    return await solveChallenge(challenge);
   }
 
   /**
    * @param {string} sessionId
    */
   async deleteConversation(sessionId) {
-    // DeepSeek 删除会话 API
-    const res = await httpRequest(`${BASE_URL}/chat_session/${encodeURIComponent(sessionId)}`, {
-      method: 'DELETE',
+    // DeepSeek 删除会话 API（使用 clear_context 替代 DELETE，兼容新 API）
+    const res = await httpRequest(`${BASE_URL}/chat_session/delete`, {
+      method: 'POST',
       headers: this._headers(),
+      body: JSON.stringify({ chat_session_id: sessionId }),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');

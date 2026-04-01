@@ -1,31 +1,40 @@
 /**
- * 阶跃星辰 StepChat Web API Provider: stepchat.cn / yuewen.cn
+ * 阶跃星辰 StepChat Web API Provider: www.stepfun.com
  *
- * 认证: Oasis-Token (从浏览器 Cookies 获取)
- *       可选 deviceId (从 LocalStorage 获取)
- *       Token 格式: "deviceId@Oasis-Token" 或单独 "Oasis-Token"
+ * 认证: 完整 Cookie 字符串（含 Oasis-Token、Oasis-Webid 等）
+ * 协议: Connect Protocol (gRPC-web 变体) — 二进制帧编码
+ * 流程: CreateChatSession → ChatStream（Connect） → SSE 格式转换
  *
- * StepChat 使用 Bearer Token 认证 + SSE 流式响应。
+ * Token 格式: 用户注册时传入完整 cookie 字符串
+ *
+ * 响应帧类型:
+ *   startEvent       — 消息开始，含 messageId
+ *   messageEvent     — 消息元数据（模型信息等）
+ *   pipelineEvent    — 流水线阶段（推理开始/结束等）
+ *   reasoningEvent   — 推理/思考文本（增量）
+ *   textEvent        — 正式回复文本（增量）
+ *   heartBeatEvent   — 心跳
+ *   messageDoneEvent — 消息完成
+ *   doneEvent        — 流结束
  */
 
-import { randomUUID } from 'node:crypto';
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
-import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs';
 
-const BASE_URL = 'https://stepchat.cn';
+const BASE_URL = 'https://www.stepfun.com';
 
-/** 模型映射 */
 const MODEL_MAP = {
-  step: 'step',
-  stepchat: 'step',
-  'step-2': 'step',
-  'step-flash': 'step',
+  step: 'step-auto',
+  stepchat: 'step-auto',
+  'step-auto': 'step-auto',
+  'step-2': 'step-2-16k',
+  'step-flash': 'step3.5-flash',
+  'step-3': 'step3.5-flash',
 };
 
 function mapModel(model) {
   const m = (model ?? '').trim().toLowerCase();
-  return MODEL_MAP[m] ?? 'step';
+  return MODEL_MAP[m] ?? 'step-auto';
 }
 
 function normalizeMessageContent(content) {
@@ -39,70 +48,98 @@ function normalizeMessageContent(content) {
   return String(content ?? '');
 }
 
-function messagesToStepFormat(messages) {
-  const out = [];
+/** 将 OpenAI messages 合并成单个 prompt（Step Web API 只接受单条用户消息） */
+function messagesToPrompt(messages) {
+  const parts = [];
   for (const msg of messages) {
     const text = normalizeMessageContent(msg.content);
     if (msg.role === 'system') {
-      out.push({ role: 'user', content: `[System]\n${text}` });
-      continue;
+      parts.push(`[System]\n${text}`);
+    } else if (msg.role === 'assistant') {
+      parts.push(`[Assistant]\n${text}`);
+    } else {
+      parts.push(text);
     }
-    const role = msg.role === 'assistant' ? 'assistant' : 'user';
-    out.push({ role, content: text });
   }
-  return out;
+  return parts.join('\n\n');
 }
 
-/** 解析 token: 可能是 "deviceId@OasisToken" 格式 */
-function parseToken(rawToken) {
-  if (rawToken.includes('@')) {
-    const idx = rawToken.indexOf('@');
-    return {
-      deviceId: rawToken.slice(0, idx),
-      oasisToken: rawToken.slice(idx + 1),
-    };
-  }
-  return { deviceId: '', oasisToken: rawToken };
+/**
+ * 将 JSON payload 编码为 Connect Protocol 帧
+ * 帧格式: 1 字节 flags + 4 字节长度（big-endian）+ payload
+ */
+function encodeConnectFrame(payload) {
+  const payloadBytes = new TextEncoder().encode(payload);
+  const frame = new Uint8Array(5 + payloadBytes.length);
+  frame[0] = 0x00;
+  const len = payloadBytes.length;
+  frame[1] = (len >> 24) & 0xff;
+  frame[2] = (len >> 16) & 0xff;
+  frame[3] = (len >> 8) & 0xff;
+  frame[4] = len & 0xff;
+  frame.set(payloadBytes, 5);
+  return frame;
 }
 
-/** 从 SSE 流中提取 conversation_id */
-async function readConvIdFromStream(stream) {
-  const reader = stream.getReader();
+/**
+ * 将 Connect Protocol 二进制流转换为 SSE 格式的 ReadableStream。
+ * 提取 textEvent 作为内容 delta，格式化为 SSE data 行。
+ * 这样下游 native-to-openai 转换器可以像处理 SSE 一样处理 Step 的响应。
+ */
+function connectStreamToSSE(connectStream) {
   const decoder = new TextDecoder();
-  let buffer = '';
-  let convId = '';
-  try {
-    while (!convId) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.replace(/\r$/, '').trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const payload = trimmed.slice(5).trimStart();
-        if (payload === '[DONE]' || !payload) continue;
+  const encoder = new TextEncoder();
+  let frameBuffer = new Uint8Array(0);
+
+  return new TransformStream({
+    transform(chunk, controller) {
+      // 拼接到 buffer
+      const newBuf = new Uint8Array(frameBuffer.length + chunk.length);
+      newBuf.set(frameBuffer);
+      newBuf.set(chunk, frameBuffer.length);
+      frameBuffer = newBuf;
+
+      // 逐帧解析
+      while (frameBuffer.length >= 5) {
+        // const flags = frameBuffer[0];
+        const fLen =
+          (frameBuffer[1] << 24) |
+          (frameBuffer[2] << 16) |
+          (frameBuffer[3] << 8) |
+          frameBuffer[4];
+        if (frameBuffer.length < 5 + fLen) break;
+
+        const frameData = decoder.decode(frameBuffer.slice(5, 5 + fLen));
+        frameBuffer = frameBuffer.slice(5 + fLen);
+
         try {
-          const obj = JSON.parse(payload);
-          const cid = obj.conversation_id ?? obj.chat_id ?? obj.id;
-          if (cid && typeof cid === 'string') {
-            convId = cid;
-            break;
+          const obj = JSON.parse(frameData);
+          const event = obj.data?.event;
+          if (!event) continue;
+
+          // textEvent → 正式回复文本
+          if (event.textEvent && typeof event.textEvent.text === 'string') {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: event.textEvent.text })}\n\n`));
           }
-        } catch { /* ignore */ }
+          // messageDoneEvent / doneEvent → 结束
+          if (event.messageDoneEvent || event.doneEvent) {
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          }
+        } catch {
+          // 忽略解析错误
+        }
       }
-    }
-  } finally {
-    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
-    reader.releaseLock();
-  }
-  return convId;
+    },
+    flush(controller) {
+      // 确保发送结束标记
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+    },
+  });
 }
 
 export class StepProvider {
   /**
-   * @param {string} token  Oasis-Token 或 "deviceId@Oasis-Token"
+   * @param {string} token  完整 cookie 字符串
    */
   constructor(token) {
     /** @private */
@@ -113,29 +150,58 @@ export class StepProvider {
     return 'step';
   }
 
-  /** @private */
+  /** @private Connect Protocol 请求头 */
   _headers(extra = {}) {
-    const { deviceId, oasisToken } = parseToken(this._token);
-    const h = {
-      Authorization: `Bearer ${oasisToken}`,
+    return {
       'Content-Type': 'application/json',
-      'Oasis-Token': oasisToken,
+      Cookie: this._token,
+      'connect-protocol-version': '1',
+      'oasis-appid': '10200',
+      'oasis-language': 'zh',
+      'oasis-platform': 'web',
+      'x-waf-client-type': 'fetch_sdk',
+      canary: 'false',
       Origin: BASE_URL,
-      Referer: `${BASE_URL}/`,
+      Referer: `${BASE_URL}/chats/new`,
       ...extra,
     };
-    if (deviceId) h['X-Device-Id'] = deviceId;
-    return h;
   }
 
-  async deleteConversation(convId) {
-    const res = await httpRequest(`${BASE_URL}/api/chat/${encodeURIComponent(convId)}`, {
-      method: 'DELETE',
-      headers: this._headers(),
-    });
+  /**
+   * 创建聊天会话
+   * @returns {Promise<string>} chatSessionId
+   */
+  async createSession() {
+    const res = await httpRequest(
+      `${BASE_URL}/api/agent/capy.agent.v1.AgentService/CreateChatSession`,
+      { method: 'POST', headers: this._headers(), body: '{}' },
+    );
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`Step deleteConversation failed: ${res.status} ${text.slice(0, 200)}`);
+      throw new Error(`Step createSession failed: ${res.status} ${text.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const sessionId = data.chatSession?.chatSessionId || data.chatSessionId;
+    if (!sessionId) throw new Error('Step createSession: missing chatSessionId');
+    return sessionId;
+  }
+
+  /**
+   * 删除聊天会话
+   * @param {string} sessionId
+   */
+  async deleteConversation(sessionId) {
+    const res = await httpRequest(
+      `${BASE_URL}/api/agent/capy.agent.v1.AgentService/DeleteChatSession`,
+      {
+        method: 'POST',
+        headers: this._headers(),
+        body: JSON.stringify({ chatSessionId: sessionId }),
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.warn(`Step deleteConversation: ${res.status} ${text.slice(0, 200)}`);
     }
   }
 
@@ -146,55 +212,44 @@ export class StepProvider {
    */
   async chatCompletion(messages, options = {}) {
     if (options.token) this._token = options.token;
-    const stepMessages = messagesToStepFormat(messages);
+    const prompt = messagesToPrompt(messages);
+    const model = mapModel(options.model);
 
-    // 先创建会话
-    const createRes = await httpRequest(`${BASE_URL}/api/chat/create`, {
-      method: 'POST',
-      headers: this._headers(),
-      body: JSON.stringify({ name: '' }),
+    // 1. 创建会话
+    const sessionId = await this.createSession();
+
+    // 2. 构建 Connect Protocol 请求
+    const payload = JSON.stringify({
+      message: {
+        chatSessionId: sessionId,
+        content: { userMessage: { qa: { content: prompt } } },
+      },
+      config: { model, enableReasoning: false, enableSearch: false },
     });
-    let convId = '';
-    if (createRes.ok) {
-      const createData = await createRes.json().catch(() => null);
-      convId = createData?.data?.id ?? createData?.id ?? '';
-    }
+    const frame = encodeConnectFrame(payload);
 
-    // 发送消息
-    const body = {
-      messages: stepMessages,
-      conversation_id: convId,
-      chat_type: 'search_chat',
-    };
-
-    const res = await httpRequest(`${BASE_URL}/api/chat/completion`, {
-      method: 'POST',
-      headers: this._headers({ Accept: 'text/event-stream' }),
-      body: JSON.stringify(body),
-    });
+    const res = await httpRequest(
+      `${BASE_URL}/api/agent/capy.agent.v1.AgentService/ChatStream`,
+      {
+        method: 'POST',
+        headers: this._headers({ 'Content-Type': 'application/connect+json' }),
+        body: frame,
+      },
+    );
 
     if (!res.ok || !res.body) {
       const errText = await res.text().catch(() => '');
       throw new Error(`Step chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    // 如果创建时没拿到 convId，从 SSE 流中解析（避免 tee）
-    if (!convId) {
-      const { stream, idPromise } = createIdExtractingPassthrough(res.body, (obj) => {
-        const cid = obj.id ?? obj.conversation_id;
-        return (cid && typeof cid === 'string') ? cid : null;
-      });
-      const tracker = options.tracker;
-      idPromise.then((id) => {
-        if (tracker && id) tracker.record(id, this.name, () => this.deleteConversation(id));
-      });
-      return { stream, conversationId: '', _idPromise: idPromise };
-    }
+    // 3. Connect → SSE 转换
+    const sseStream = res.body.pipeThrough(connectStreamToSSE());
 
     const tracker = options.tracker;
-    if (tracker && convId) {
-      tracker.record(convId, this.name, () => this.deleteConversation(convId));
+    if (tracker && sessionId) {
+      tracker.record(sessionId, this.name, () => this.deleteConversation(sessionId));
     }
-    return { stream: res.body, conversationId: convId };
+
+    return { stream: sseStream, conversationId: sessionId };
   }
 }

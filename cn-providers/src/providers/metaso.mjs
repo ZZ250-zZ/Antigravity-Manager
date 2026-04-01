@@ -1,10 +1,11 @@
 /**
  * 秘塔AI (Metaso) Web API Provider: metaso.cn
  *
- * 认证: uid-sid (从浏览器 Cookies 获取的 uid 和 sid 用 "-" 拼接)
+ * 认证: 完整 Cookie 字符串（从浏览器 CDP 提取）
  *
- * 秘塔AI 是搜索增强型 AI，内部 API 返回 SSE 流式响应。
- * 支持 简洁/深入/研究 三种模式。
+ * 秘塔AI 是搜索增强型 AI，使用 /api/search/chat 端点返回 SSE 流式响应。
+ * SSE 事件 type 分类：conversation_init / user_message_init / response_message_init / text / error
+ * 支持 concise(简洁) / detail(深入) / research(研究) 三种模式。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -14,7 +15,7 @@ import { createIdExtractingPassthrough } from '../utils/stream-id-extractor.mjs'
 
 const BASE_URL = 'https://metaso.cn';
 
-/** 模型映射 */
+/** 模型映射：外部模型名 → Metaso 内部 mode */
 const MODEL_MAP = {
   metaso: 'concise',
   'metaso-concise': 'concise',
@@ -48,53 +49,9 @@ function messagesToText(messages) {
   return '';
 }
 
-/** 解析 token: "uid-sid" 格式 */
-function parseToken(rawToken) {
-  const idx = rawToken.indexOf('-');
-  if (idx > 0) {
-    return { uid: rawToken.slice(0, idx), sid: rawToken.slice(idx + 1) };
-  }
-  return { uid: rawToken, sid: '' };
-}
-
-/** 从 SSE 流中提取 conversation_id */
-async function readConvIdFromStream(stream) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let convId = '';
-  try {
-    while (!convId) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) {
-        const trimmed = line.replace(/\r$/, '').trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const payload = trimmed.slice(5).trimStart();
-        if (payload === '[DONE]' || !payload) continue;
-        try {
-          const obj = JSON.parse(payload);
-          const cid = obj.id ?? obj.conversation_id ?? obj.session_id;
-          if (cid && typeof cid === 'string') {
-            convId = cid;
-            break;
-          }
-        } catch { /* ignore */ }
-      }
-    }
-  } finally {
-    // wreq-js 的 tee() 分支不兼容 cancel()，用 releaseLock 替代
-    reader.releaseLock();
-  }
-  return convId;
-}
-
 export class MetasoProvider {
   /**
-   * @param {string} token  "uid-sid" 格式
+   * @param {string} token  完整 Cookie 字符串或 "uid-sid" 格式
    */
   constructor(token) {
     /** @private */
@@ -105,39 +62,69 @@ export class MetasoProvider {
     return 'metaso';
   }
 
-  /** @private */
+  /** @private 构造请求头，支持完整 Cookie 或 uid-sid 格式 */
   _headers(extra = {}) {
-    const { uid, sid } = parseToken(this._token);
+    let cookieStr = this._token;
+    // 兼容旧的 "uid-sid" 格式
+    if (!cookieStr.includes('=')) {
+      const idx = cookieStr.indexOf('-');
+      if (idx > 0) {
+        cookieStr = `uid=${cookieStr.slice(0, idx)}; sid=${cookieStr.slice(idx + 1)}`;
+      }
+    }
     return {
       'Content-Type': 'application/json',
-      Cookie: `uid=${uid}; sid=${sid}`,
+      Cookie: cookieStr,
       Origin: BASE_URL,
       Referer: `${BASE_URL}/`,
       ...extra,
     };
   }
 
-  // 秘塔搜索式 AI 可能不支持删除会话
+  // 秘塔搜索式 AI 不支持删除会话
   async deleteConversation(_convId) {
-    // no-op: 秘塔 AI 搜索不一定有显式删除 API
+    // no-op
   }
 
   /**
    * @param {Array<{ role: string; content?: unknown }>} messages
    * @param {{ token?: string; model?: string; stream?: boolean; tracker?: ConversationTracker }} [options]
-   * @returns {Promise<{ stream: ReadableStream<Uint8Array>; conversationId: string }>}
+   * @returns {Promise<{ stream: ReadableStream<Uint8Array>; conversationId: string; _idPromise: Promise<string> }>}
    */
   async chatCompletion(messages, options = {}) {
     if (options.token) this._token = options.token;
     const mode = mapModel(options.model);
     const query = messagesToText(messages);
 
+    const conversationId = `temp-${randomUUID()}`;
+    // 新版 /api/search/chat 请求体
     const body = {
-      question: query,
+      model: mode === 'concise' ? 'concise' : 'fast_thinking',
+      stream: true,
+      messages: [{
+        id: `temp-${randomUUID()}`,
+        key: `temp-${randomUUID()}`,
+        conversationId,
+        role: 'user',
+        content: query,
+        markdownContent: query,
+        engineType: '',
+        filter: 'all',
+        contentType: 0,
+        outputHtml: false,
+        mode,
+        model: mode === 'concise' ? 'concise' : 'fast_thinking',
+        outputStyle: '正常',
+      }],
+      engineType: '',
       mode,
+      filter: 'all',
+      outputHtml: false,
+      outputStyle: '正常',
+      darkMode: false,
     };
 
-    const res = await httpRequest(`${BASE_URL}/api/search`, {
+    const res = await httpRequest(`${BASE_URL}/api/search/chat`, {
       method: 'POST',
       headers: this._headers({ Accept: 'text/event-stream' }),
       body: JSON.stringify(body),
@@ -148,16 +135,18 @@ export class MetasoProvider {
       throw new Error(`Metaso chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
-    // 用 passthrough 提取 convId，避免 tee()
+    // 从 conversation_init 事件中提取 convId
     const { stream, idPromise } = createIdExtractingPassthrough(res.body, (obj) => {
-      const cid = obj.id ?? obj.conversation_id ?? obj.session_id;
-      return (cid && typeof cid === 'string') ? cid : null;
+      if (obj.type === 'conversation_init' && obj.data?.id) {
+        return String(obj.data.id);
+      }
+      return null;
     });
 
     const tracker = options.tracker;
-    idPromise.then((conversationId) => {
-      if (tracker && conversationId) {
-        tracker.record(conversationId, this.name, () => this.deleteConversation(conversationId));
+    idPromise.then((cid) => {
+      if (tracker && cid) {
+        tracker.record(cid, this.name, () => this.deleteConversation(cid));
       }
     });
 
