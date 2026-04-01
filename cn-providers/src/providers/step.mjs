@@ -21,8 +21,38 @@
 import { httpRequest } from '../http-client.mjs';
 import { ConversationTracker } from '../utils/conversation-tracker.mjs';
 import { registerSSEProcessor } from '../converters/sse-registry.mjs';
+import { markExpired } from '../utils/token-store.mjs';
 
 const BASE_URL = 'https://www.stepfun.com';
+// JWT 过期提前量（秒）：距过期不足此时间则尝试刷新
+const REFRESH_MARGIN_SECS = 300;
+
+/**
+ * 从 Cookie 字符串中解析 Oasis-Token JWT 的 exp 声明。
+ * 返回过期时间戳（秒），解析失败返回 null。
+ */
+function parseJwtExp(cookieStr) {
+  const match = cookieStr.match(/Oasis-Token=([^;]+)/);
+  if (!match) return null;
+  const jwt = match[1];
+  const parts = jwt.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return typeof payload.exp === 'number' ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 检查 JWT 是否已过期或即将过期
+ */
+function isTokenExpiring(cookieStr) {
+  const exp = parseJwtExp(cookieStr);
+  if (exp === null) return false; // 无法解析时不阻塞
+  return Math.floor(Date.now() / 1000) + REFRESH_MARGIN_SECS >= exp;
+}
 
 const MODEL_MAP = {
   step: 'step-auto',
@@ -213,6 +243,14 @@ export class StepProvider {
    */
   async chatCompletion(messages, options = {}) {
     if (options.token) this._token = options.token;
+
+    // Token 过期预检：JWT 快到期时提前告警并标记
+    if (isTokenExpiring(this._token)) {
+      console.warn('[step] Oasis-Token JWT is expired or expiring soon, marking token as expired');
+      markExpired('step').catch(() => {});
+      throw new Error('Step Token (Oasis-Token) has expired. Please re-login to stepfun.com and re-extract cookies.');
+    }
+
     const prompt = messagesToPrompt(messages);
     const model = mapModel(options.model);
 
@@ -240,6 +278,11 @@ export class StepProvider {
 
     if (!res.ok || !res.body) {
       const errText = await res.text().catch(() => '');
+      // 401 通常意味着 token 过期
+      if (res.status === 401) {
+        markExpired('step').catch(() => {});
+        throw new Error('Step Token expired (401). Please re-login to stepfun.com and re-extract cookies.');
+      }
       throw new Error(`Step chatCompletion failed: ${res.status} ${errText.slice(0, 300)}`);
     }
 
