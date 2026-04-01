@@ -78,7 +78,9 @@ const MODEL_PROVIDER_MAP = {
   // 腾讯元宝
   yuanbao: 'yuanbao',
   'yuanbao-deepseek': 'yuanbao',
+  'yuanbao-deepseek-r1': 'yuanbao',
   'yuanbao-hunyuan': 'yuanbao',
+  'yuanbao-hunyuan-t1': 'yuanbao',
   // 小米 MOMI
   momi: 'momi',
   'momi-pro': 'momi',

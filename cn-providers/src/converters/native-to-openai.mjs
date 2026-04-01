@@ -191,9 +191,16 @@ export function createOpenAIStreamTransformer(providerName, model) {
         if (typeof parsed.text === 'string') return parsed.text;
         return null;
       }
-      case 'hailuo':
-      case 'step':
       case 'yuanbao': {
+        // 元宝 SSE: data: {"type":"text","msg":"增量文本"}
+        if (parsed.type === 'text' && typeof parsed.msg === 'string') return parsed.msg;
+        // 兜底：其他格式
+        if (typeof parsed.content === 'string') return parsed.content;
+        if (typeof parsed.text === 'string') return parsed.text;
+        return null;
+      }
+      case 'hailuo':
+      case 'step': {
         // 通用 Web Provider: 尝试从 content / text / choices.delta.content 提取
         const oaiDelta = parsed.choices?.[0]?.delta?.content;
         if (typeof oaiDelta === 'string') return oaiDelta;
@@ -474,11 +481,10 @@ function extractFullContent(parsed, providerName, prev) {
       return prev;
     }
     case 'yuanbao': {
-      const oaiDelta = parsed.choices?.[0]?.delta?.content;
-      if (typeof oaiDelta === 'string') return prev + oaiDelta;
+      // 元宝 SSE: data: {"type":"text","msg":"增量文本"}
+      if (parsed.type === 'text' && typeof parsed.msg === 'string') return prev + parsed.msg;
       if (typeof parsed.content === 'string') return parsed.content;
       if (typeof parsed.text === 'string') return prev + parsed.text;
-      if (typeof parsed.answer === 'string') return parsed.answer;
       return prev;
     }
     default: {
